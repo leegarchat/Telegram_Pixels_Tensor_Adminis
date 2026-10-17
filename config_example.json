@@ -1,0 +1,42 @@
+{
+  "bot_token": "YOUR_BOT_TOKEN_HERE",
+  "bot_username": "PixelSubmitBot",
+  "mod_group_id": -1001234567890,
+  "cooldown_seconds": 600,
+  "admins": [
+    123456789,
+    100000000
+  ],
+  "families": {
+    "p6": {
+      "name": "Pixel 6 Series",
+      "topic_id": 10,
+      "channel_id": -1001111111111
+    },
+    "p7": {
+      "name": "Pixel 7 Series",
+      "topic_id": 12,
+      "channel_id": -1002222222222
+    },
+    "p8": {
+      "name": "Pixel 8 Series",
+      "topic_id": 14,
+      "channel_id": -1003333333333
+    },
+    "p9": {
+      "name": "Pixel 9 Series",
+      "topic_id": 16,
+      "channel_id": -1004444444444
+    },
+    "p10": {
+      "name": "Pixel 10 Series",
+      "topic_id": 18,
+      "channel_id": -1005555555555
+    },
+    "p11": {
+      "name": "Pixel 11 Series",
+      "topic_id": 20,
+      "channel_id": -1006666666666
+    }
+  }
+}
