@@ -7,10 +7,24 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
+from aiogram.client.session.aiohttp import AiohttpSession
+
 from bot.config_manager import config
 
 log = logging.getLogger(__name__)
 ACTIVE_PROXY: dict | None = None
+
+
+class ProxyAiohttpSession(AiohttpSession):
+    """Create proxy connectors with the same unverified TLS behavior as svc."""
+
+    async def create_session(self):
+        previous_ssl = self._connector_init.get("ssl")
+        self._connector_init["ssl"] = False
+        try:
+            return await super().create_session()
+        finally:
+            self._connector_init["ssl"] = previous_ssl
 
 
 def proxy_json_candidates() -> list[Path]:

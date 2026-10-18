@@ -62,7 +62,8 @@ NEW_SAMPLE_HELP = (
     "{Banner | Banner image | ?photo}</code>\n\n"
     "<b>Related commands:</b>\n"
     "• <code>/sample_list</code> — list all templates\n"
-    "• <code>/sample &lt;name&gt;</code> — template config + preview"
+    "• <code>/sample &lt;name&gt;</code> — template config + preview\n"
+    "• <code>/del_sample &lt;name&gt;</code> — delete a template in this topic"
 )
 
 
@@ -149,7 +150,7 @@ async def cmd_new_sample(message: Message):
 
     blocks, errors = parse_body(body)
     if errors:
-        listed = "\n".join(f"<code>{e}</code>" for e in errors)
+        listed = "\n".join(f"<code>{html.escape(e)}</code>" for e in errors)
         return await message.reply(
             f"⚠️ Invalid placeholders:\n{listed}\n\n"
             "Format: <code>{Key | Prompt | type}</code>\n"
@@ -237,6 +238,26 @@ async def cmd_sample_list(message: Message):
         )
     lines.append("\nUse <code>/sample &lt;name&gt;</code> to inspect a template.")
     await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@router.message(Command("del_sample"))
+async def cmd_del_sample(message: Message, command: CommandObject):
+    family_key, family = find_topic_family(message)
+    if family is None:
+        return await message.reply("Run /del_sample inside a linked moderation topic.")
+    if not command.args:
+        return await message.reply("Usage: <code>/del_sample &lt;name&gt;</code>", parse_mode="HTML")
+
+    query = command.args.strip().strip('"')
+    key, sample = find_sample(family_key, query)
+    if sample is None:
+        return await message.reply("Template not found. Use /sample_list to list templates.")
+    config.delete_sample(family_key, key)
+    await message.reply(
+        f"Deleted template <b>{html.escape(sample.get('name', key))}</b> "
+        f"(<code>{key}</code>) from <b>{html.escape(family.get('name', family_key))}</b>.",
+        parse_mode="HTML",
+    )
 
 
 @router.message(Command("sample"))

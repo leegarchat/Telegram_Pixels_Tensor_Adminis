@@ -71,17 +71,17 @@ def validate_answer(
         url = raw.splitlines()[0].strip()
         if not URL_RE.match(url):
             return False, None, "A single URL like <code>https://...</code> is expected."
-        return True, url, None
+        return True, html.escape(url), None
 
     if block.type == "urls":
         parts = [p for p in re.split(r"[\s\n]+", raw) if p]
         bad = [p for p in parts if not URL_RE.match(p)]
         if bad:
             return False, None, (
-                f"Not a URL: <code>{bad[0]}</code>. "
+                f"Not a URL: <code>{html.escape(bad[0])}</code>. "
                 "Send URLs separated by spaces or new lines."
             )
-        return True, "\n".join(parts), None
+        return True, "\n".join(html.escape(part) for part in parts), None
 
     return True, text_html, None
 
@@ -112,16 +112,17 @@ def render_sample(body: str, answers: Dict[str, Any]) -> Tuple[str, Optional[str
     meta: List[List[Any]] = []
 
     for line in body.split("\n"):
-        converted = BOLD_RE.sub(r"<b>\1</b>", line)
         any_block = False
         any_answered = False
 
-        def repl(m):
+        replacements: Dict[str, str] = {}
+
+        def replace_block(raw: str) -> str:
             nonlocal any_block, any_answered, photo_id
-            block = parse_block(m.group(1))
-            if block is None:
-                return m.group(0)
             any_block = True
+            block = parse_block(raw)
+            if block is None:
+                return "{" + raw + "}"
             val = answers.get(block.key)
             if not val:
                 return ""
@@ -132,7 +133,17 @@ def render_sample(body: str, answers: Dict[str, Any]) -> Tuple[str, Optional[str
                 return ""
             return str(val)
 
-        new_line = BLOCK_RE.sub(repl, converted)
+        parts = []
+        cursor = 0
+        for block_index, match in enumerate(BLOCK_RE.finditer(line)):
+            token = f"\x00SAMPLE_BLOCK_{block_index}\x00"
+            parts.extend((line[cursor:match.start()], token))
+            replacements[token] = replace_block(match.group(1))
+            cursor = match.end()
+        parts.append(line[cursor:])
+        new_line = BOLD_RE.sub(r"<b>\1</b>", "".join(parts))
+        for token, value in replacements.items():
+            new_line = new_line.replace(token, value)
         keep = (not any_block) or any_answered
         meta.append([new_line, keep, keep and _is_label_line(line)])
 

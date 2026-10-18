@@ -158,6 +158,14 @@ class ConfigManager:
     def get_sample(self, family_key: str, key: str) -> Dict[str, Any]:
         return self.list_samples(family_key).get(key, {})
 
+    def delete_sample(self, family_key: str, key: str) -> bool:
+        samples = self.data.get("families", {}).get(family_key, {}).get("samples", {})
+        if key not in samples:
+            return False
+        del samples[key]
+        self.save()
+        return True
+
     def save_sample(
         self,
         family_key: str,
@@ -189,6 +197,3 @@ class ConfigManager:
 
 
 config = ConfigManager()
-
-# In-memory storage of pending submissions: {mod_group_msg_id: {user_id, family, text, photo_id}}
-pending_posts: Dict[int, Dict[str, Any]] = {}

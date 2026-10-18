@@ -1,3 +1,4 @@
+import html
 import time
 
 from aiogram import Router, F, Bot
@@ -5,7 +6,8 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 
-from bot.config_manager import config, pending_posts
+from bot.config_manager import config
+from bot.database import post_links
 from bot.samples import (
     PHOTO_CAPTION_LIMIT,
     TEXT_MESSAGE_LIMIT,
@@ -42,6 +44,13 @@ def format_post(data: dict) -> str:
         bot_user,
         append_submit_link,
     )
+
+
+def format_user_tag(user) -> str:
+    if user.username:
+        return f"@{user.username}"
+    full_name = html.escape(user.full_name)
+    return f"<a href='tg://user?id={user.id}'>{full_name}</a>"
 
 
 @router.message(CommandStart())
@@ -182,7 +191,12 @@ async def step_field_text(message: Message, state: FSMContext):
             + (" or press \"Skip\"." if block["optional"] else ".")
         )
 
-    ok, value, error = validate_answer(Block(**block), text_html=message.html_text)
+    raw_input = (
+        message.text
+        if block["type"] in ("url", "urls")
+        else message.html_text
+    )
+    ok, value, error = validate_answer(Block(**block), text_html=raw_input)
     if not ok:
         return await message.answer(f"⚠️ {error}\nPlease try again:", parse_mode="HTML")
     await store_and_advance(message, state, value)
@@ -265,18 +279,16 @@ async def confirm_send(call: CallbackQuery, state: FSMContext, bot: Bot):
     fam_cfg = config.get_family(data["family"])
     mod_group_id = config.data.get("mod_group_id")
 
-    user_tag = (
-        f"@{call.from_user.username}"
-        if call.from_user.username
-        else f"<a href='tg://user?id={call.from_user.id}'>{call.from_user.full_name}</a>"
-    )
+    user_tag = format_user_tag(call.from_user)
+    family_name = html.escape(str(fam_cfg.get("name", data["family"])))
+    sample_name = html.escape(str(data.get("sample_name", "")))
     mod_header = (
         f"📥 <b>New Submission</b> from {user_tag} (<code>{call.from_user.id}</code>)\n"
-        f"Target: <b>{fam_cfg.get('name')}</b> (<code>#{data['family']}</code>)"
-        f" · <b>{data.get('sample_name', '')}</b>\n"
+        f"Target: <b>{family_name}</b> (<code>#{data['family']}</code>)"
+        f" · <b>{sample_name}</b>\n"
         f"────────────────────\n"
     )
-    await bot.send_message(
+    header_message = await bot.send_message(
         chat_id=mod_group_id,
         message_thread_id=fam_cfg.get("topic_id"),
         text=mod_header,
@@ -303,12 +315,15 @@ async def confirm_send(call: CallbackQuery, state: FSMContext, bot: Bot):
             reply_markup=get_mod_decision_kb()
         )
 
-    pending_posts[sent.message_id] = {
-        "user_id": call.from_user.id,
-        "family": data["family"],
-        "text": data["final_text"],
-        "photo_id": data.get("photo_id")
-    }
+    post_links.add_pending_submission(
+        mod_chat_id=mod_group_id,
+        header_message_id=header_message.message_id,
+        content_message_id=sent.message_id,
+        user_id=call.from_user.id,
+        family_key=data["family"],
+        text=data["final_text"],
+        photo_id=data.get("photo_id"),
+    )
     user_cooldowns[call.from_user.id] = time.time()
 
     await state.clear()

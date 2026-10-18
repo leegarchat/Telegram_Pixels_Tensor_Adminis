@@ -14,8 +14,8 @@ from aiogram.filters import Command
 from aiogram.types import BufferedInputFile, Message
 
 from bot.config_manager import config
-from bot.database import DATABASE_PATH
-from bot.filters import InModGroup
+from bot.database import DATABASE_PATH, post_links
+from bot.filters import InModGroup, IsSuperAdmin
 from bot.samples import parse_body
 
 router = Router()
@@ -240,6 +240,7 @@ def install_full_backup(config_payload: Any, database_bytes: bytes) -> None:
             raise
 
     config.data = safe_config
+    post_links.initialize()
 
 
 @router.message(Command("export_config"))
@@ -255,7 +256,7 @@ async def cmd_export_config(message: Message, bot: Bot):
     )
 
 
-@router.message(Command("import_config"))
+@router.message(IsSuperAdmin(), Command("import_config"))
 async def cmd_import_config(message: Message, bot: Bot):
     if not await require_topic(message):
         return
@@ -404,7 +405,7 @@ async def cmd_export_all(message: Message, bot: Bot):
     )
 
 
-@router.message(Command("import_all"))
+@router.message(IsSuperAdmin(), Command("import_all"))
 async def cmd_import_all(message: Message, bot: Bot):
     if not await require_topic(message):
         return

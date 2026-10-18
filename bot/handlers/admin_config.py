@@ -1,21 +1,15 @@
 import json
 from aiogram import Router
 from aiogram.types import Message
-from aiogram.filters import Command, CommandObject, Filter
+from aiogram.filters import Command, CommandObject
 
 from bot.config_manager import config
-from bot.filters import InModGroup
+from bot.filters import InModGroup, IsSuperAdmin
 
 router = Router()
-router.message.filter(InModGroup())
 
 
-class IsSuperAdmin(Filter):
-    async def __call__(self, message: Message) -> bool:
-        return config.is_admin(message.from_user.id)
-
-
-@router.message(IsSuperAdmin(), Command("cfg_show"))
+@router.message(InModGroup(), IsSuperAdmin(), Command("cfg_show"))
 async def cmd_cfg_show(message: Message):
     safe_copy = dict(config.data)
     safe_copy["bot_token"] = "***HIDDEN***"
@@ -32,7 +26,7 @@ async def cmd_set_modgroup(message: Message, command: CommandObject):
     await message.answer(f"✅ <code>mod_group_id</code> updated to <code>{command.args}</code>", parse_mode="HTML")
 
 
-@router.message(IsSuperAdmin(), Command("cfg_set_family"))
+@router.message(InModGroup(), IsSuperAdmin(), Command("cfg_set_family"))
 async def cmd_set_family(message: Message, command: CommandObject):
     """Format: /cfg_set_family p8 topic_id channel_id Family Name"""
     if not command.args:
@@ -50,7 +44,7 @@ async def cmd_set_family(message: Message, command: CommandObject):
     await message.answer(f"✅ Family <b>{name}</b> (<code>{key}</code>) saved to config.json.", parse_mode="HTML")
 
 
-@router.message(IsSuperAdmin(), Command("cfg_add_admin"))
+@router.message(InModGroup(), IsSuperAdmin(), Command("cfg_add_admin"))
 async def cmd_add_admin(message: Message, command: CommandObject):
     if not command.args or not command.args.isdigit():
         return await message.answer("Usage: <code>/cfg_add_admin [user_id]</code>", parse_mode="HTML")
@@ -61,7 +55,7 @@ async def cmd_add_admin(message: Message, command: CommandObject):
     await message.answer(f"✅ User <code>{new_id}</code> added to admins.", parse_mode="HTML")
 
 
-@router.message(IsSuperAdmin(), Command("cfg_del_admin"))
+@router.message(InModGroup(), IsSuperAdmin(), Command("cfg_del_admin"))
 async def cmd_del_admin(message: Message, command: CommandObject):
     if not command.args or not command.args.isdigit():
         return await message.answer("Usage: <code>/cfg_del_admin [user_id]</code>", parse_mode="HTML")

@@ -50,6 +50,7 @@ def build_help_text() -> str:
         "• <code>/new_sample_help</code> — full template formatting guide\n"
         "• <code>/sample_list</code> — list templates for this topic's channel\n"
         "• <code>/sample &lt;name&gt;</code> — show this topic's template config + preview\n"
+        "• <code>/del_sample &lt;name&gt;</code> — delete a template from this topic\n"
         f"• Total topic-scoped templates: <b>{sample_count}</b>\n\n"
         "<b>Import/export (run in a topic; import by replying to the exported file)</b>\n"
         "• <code>/export_sample</code> · <code>/import_sample</code> — current topic templates\n"

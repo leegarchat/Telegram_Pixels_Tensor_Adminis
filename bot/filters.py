@@ -15,3 +15,10 @@ class InModGroup(Filter):
             return False
         mod_group_id = config.data.get("mod_group_id")
         return mod_group_id is not None and chat.id == mod_group_id
+
+
+class IsSuperAdmin(Filter):
+    """Check whether a message sender is listed in the configured admins."""
+
+    async def __call__(self, message: Message) -> bool:
+        return bool(message.from_user and config.is_admin(message.from_user.id))

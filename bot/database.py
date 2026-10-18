@@ -12,14 +12,14 @@ class PostLinkDatabase:
 
     def __init__(self, path: Path = DATABASE_PATH):
         self.path = path
-        self._initialize()
+        self.initialize()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=10)
         connection.row_factory = sqlite3.Row
         return connection
 
-    def _initialize(self) -> None:
+    def initialize(self) -> None:
         with closing(self._connect()) as connection:
             with connection:
                 connection.execute(
@@ -39,6 +39,25 @@ class PostLinkDatabase:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_post_links_target "
                     "ON post_links(channel_id, channel_message_id)"
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS pending_submissions (
+                        mod_chat_id INTEGER NOT NULL,
+                        message_id INTEGER NOT NULL,
+                        content_message_id INTEGER NOT NULL,
+                        user_id INTEGER NOT NULL,
+                        family_key TEXT NOT NULL,
+                        text TEXT NOT NULL,
+                        photo_id TEXT,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (mod_chat_id, message_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_pending_content "
+                    "ON pending_submissions(mod_chat_id, content_message_id)"
                 )
 
     def add_link(
@@ -102,6 +121,72 @@ class PostLinkDatabase:
                 cursor = connection.execute(
                     "DELETE FROM post_links WHERE channel_id = ? AND channel_message_id = ?",
                     (channel_id, channel_message_id),
+                )
+                return cursor.rowcount
+
+    def add_pending_submission(
+        self,
+        mod_chat_id: int,
+        header_message_id: int,
+        content_message_id: int,
+        user_id: int,
+        family_key: str,
+        text: str,
+        photo_id: str | None,
+    ) -> None:
+        rows = {(mod_chat_id, content_message_id), (mod_chat_id, header_message_id)}
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.executemany(
+                    """
+                    INSERT INTO pending_submissions (
+                        mod_chat_id, message_id, content_message_id,
+                        user_id, family_key, text, photo_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(mod_chat_id, message_id) DO UPDATE SET
+                        content_message_id = excluded.content_message_id,
+                        user_id = excluded.user_id,
+                        family_key = excluded.family_key,
+                        text = excluded.text,
+                        photo_id = excluded.photo_id,
+                        created_at = CURRENT_TIMESTAMP
+                    """,
+                    [
+                        (
+                            chat_id,
+                            message_id,
+                            content_message_id,
+                            user_id,
+                            family_key,
+                            text,
+                            photo_id,
+                        )
+                        for chat_id, message_id in rows
+                    ],
+                )
+
+    def get_pending_submission(
+        self, mod_chat_id: int, message_id: int
+    ) -> dict[str, Any] | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM pending_submissions
+                WHERE mod_chat_id = ? AND message_id = ?
+                """,
+                (mod_chat_id, message_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def delete_pending_submission(self, mod_chat_id: int, content_message_id: int) -> int:
+        with closing(self._connect()) as connection:
+            with connection:
+                cursor = connection.execute(
+                    """
+                    DELETE FROM pending_submissions
+                    WHERE mod_chat_id = ? AND content_message_id = ?
+                    """,
+                    (mod_chat_id, content_message_id),
                 )
                 return cursor.rowcount
 
