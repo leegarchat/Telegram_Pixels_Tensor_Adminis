@@ -1,10 +1,20 @@
+"""Topic-scoped post-template management (/new_sample family of commands).
+
+Templates live under `families.<key>.samples` in config.json and are edited
+exclusively from inside a linked moderation topic, so each channel/topic owns
+its own template set. This module implements creation, listing, inspection,
+preview and deletion.
+"""
+# html: escaping template names/bodies in replies; shlex: parsing quoted /new_sample headers.
 import html
 import shlex
 
+# Router: handler registration; Command/CommandObject: slash-command parsing; Message: updates.
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
+# config: template CRUD; InModGroup: group-only gate; samples: parsing/validation/rendering.
 from bot.config_manager import config
 from bot.filters import InModGroup
 from bot.samples import (
@@ -17,9 +27,11 @@ from bot.samples import (
     telegram_text_length,
 )
 
+# Every handler here requires the moderation group (topics provide the family context).
 router = Router()
 router.message.filter(InModGroup())
 
+# Long help text sent by /new_sample_help and reused on /new_sample usage errors.
 NEW_SAMPLE_HELP = (
     "📝 <b>How to create a post template (/new_sample)</b>\n\n"
     "<b>Command format:</b>\n"
@@ -72,7 +84,11 @@ NEW_SAMPLE_HELP = (
 
 
 def find_topic_family(message: Message):
-    """Find the configured family bound to the message's forum topic."""
+    """Resolve the (family_key, family) bound to the message's forum topic.
+
+    Returns (None, None) when sent outside a topic or when the topic has no
+    channel binding — every template command requires a linked topic.
+    """
     if message.message_thread_id is None:
         return None, None
     family_key, family = config.find_family_by_topic(message.message_thread_id)
@@ -82,7 +98,10 @@ def find_topic_family(message: Message):
 
 
 def find_sample(family_key: str, query: str):
-    """Find a topic-scoped sample by key or display name."""
+    """Find a template by normalized key or by case-insensitive display name.
+
+    Returns (key, sample) or (None, None) when nothing matches.
+    """
     samples = config.list_samples(family_key)
     key = config.normalize_sample_key(query)
     if key in samples:
@@ -94,7 +113,14 @@ def find_sample(family_key: str, query: str):
 
 
 def parse_sample_command_header(line: str) -> tuple[str, bool | None]:
-    """Parse a sample name and optional --footer on|off setting."""
+    """Parse the `/new_sample Name [--footer on|off]` first line via shlex.
+
+    Returns:
+        (template name, footer flag or None when the option is absent).
+
+    Raises:
+        ValueError: malformed --footer option or a non-/new_sample command line.
+    """
     parts = shlex.split(line)
     if not parts or parts[0].split("@", 1)[0] != "/new_sample":
         return "", None
@@ -105,18 +131,21 @@ def parse_sample_command_header(line: str) -> tuple[str, bool | None]:
     while index < len(parts):
         part = parts[index]
         if part == "--footer":
+            # Long form with a separate value: `--footer on` / `--footer off`.
             if index + 1 >= len(parts) or parts[index + 1].lower() not in {"on", "off"}:
                 raise ValueError("--footer must be followed by 'on' or 'off'.")
             footer_setting = parts[index + 1].lower() == "on"
             index += 2
             continue
         if part.startswith("--footer="):
+            # Inline form: `--footer=on` / `--footer=off`.
             value = part.split("=", 1)[1].lower()
             if value not in {"on", "off"}:
                 raise ValueError("--footer must be set to 'on' or 'off'.")
             footer_setting = value == "on"
             index += 1
             continue
+        # Anything else is part of the (possibly multi-word, quoted) template name.
         name_parts.append(part)
         index += 1
     return " ".join(name_parts).strip(), footer_setting
@@ -124,11 +153,18 @@ def parse_sample_command_header(line: str) -> tuple[str, bool | None]:
 
 @router.message(Command("new_sample_help"))
 async def cmd_new_sample_help(message: Message):
+    """Send the full template-authoring guide."""
     await message.reply(NEW_SAMPLE_HELP, parse_mode="HTML")
 
 
 @router.message(Command("new_sample"))
 async def cmd_new_sample(message: Message):
+    """Create or update a template in the current topic.
+
+    Name and options come from the command's first line; the body is everything
+    after that line, or the replied-to message when the body is sent separately
+    (useful when it exceeds convenient message length).
+    """
     family_key, family = find_topic_family(message)
     if family is None or not family.get("channel_id"):
         return await message.reply(
@@ -143,6 +179,7 @@ async def cmd_new_sample(message: Message):
         return await message.reply(f"⚠️ {html.escape(str(error))}", parse_mode="HTML")
     body = "\n".join(lines[1:]).strip()
 
+    # Allow `/new_sample Name` as a reply to a long body message.
     if not body and message.reply_to_message:
         body = (message.reply_to_message.text or message.reply_to_message.caption or "").strip()
 
@@ -152,6 +189,7 @@ async def cmd_new_sample(message: Message):
             parse_mode="HTML"
         )
 
+    # Reject invalid or duplicate placeholders before persisting anything.
     blocks, errors = parse_body(body)
     if errors:
         listed = "\n".join(f"<code>{html.escape(e)}</code>" for e in errors)
@@ -164,6 +202,8 @@ async def cmd_new_sample(message: Message):
             parse_mode="HTML"
         )
 
+    # Pre-check: fixed text plus footer must already fit within Telegram limits,
+    # otherwise even empty user answers could not be published.
     fixed_text = fixed_template_text(body)
     sample_key = config.normalize_sample_key(name)
     existing_sample = config.get_sample(family_key, sample_key)
@@ -195,6 +235,7 @@ async def cmd_new_sample(message: Message):
         body,
         append_submit_link=footer_setting,
     )
+    # Summarize the stored fields so the author can verify required/optional counts.
     fields = "\n".join(
         f"{i}. <b>{b.key}</b> — {b.type}{' (optional)' if b.optional else ''}"
         for i, b in enumerate(blocks, 1)
@@ -212,6 +253,7 @@ async def cmd_new_sample(message: Message):
 
 @router.message(Command("sample_list"))
 async def cmd_sample_list(message: Message):
+    """List all templates of the current topic with field counts and footer flags."""
     family_key, family = find_topic_family(message)
     if family is None:
         return await message.reply(
@@ -247,12 +289,14 @@ async def cmd_sample_list(message: Message):
 
 @router.message(Command("del_sample"))
 async def cmd_del_sample(message: Message, command: CommandObject):
+    """Delete one template (by key or display name) from the current topic."""
     family_key, family = find_topic_family(message)
     if family is None:
         return await message.reply("Run /del_sample inside a linked moderation topic.")
     if not command.args:
         return await message.reply("Usage: <code>/del_sample &lt;name&gt;</code>", parse_mode="HTML")
 
+    # Strip surrounding quotes so `"My Template"` also resolves.
     query = command.args.strip().strip('"')
     key, sample = find_sample(family_key, query)
     if sample is None:
@@ -267,6 +311,7 @@ async def cmd_del_sample(message: Message, command: CommandObject):
 
 @router.message(Command("sample"))
 async def cmd_sample(message: Message, command: CommandObject):
+    """Show a template's field schema, raw body, and a rendered preview with dummy answers."""
     family_key, family = find_topic_family(message)
     if family is None:
         return await message.reply(
@@ -293,6 +338,7 @@ async def cmd_sample(message: Message, command: CommandObject):
     body = sample.get("body", "")
     blocks, errors = parse_body(body)
 
+    # Human-readable field list with prompts and bool Yes/No outputs.
     fields_lines = []
     for i, b in enumerate(blocks, 1):
         fields_lines.append(
@@ -318,6 +364,7 @@ async def cmd_sample(message: Message, command: CommandObject):
         disable_web_page_preview=True
     )
 
+    # Render a preview with synthetic answers so authors see the final layout.
     answers = {}
     for b in blocks:
         if b.type == "url":

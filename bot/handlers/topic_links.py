@@ -1,12 +1,23 @@
+"""Forum-topic <-> channel link management and group help (/link, /unlink, /get_links).
+
+Each forum topic in the moderation group can be bound to exactly one channel.
+The binding (plus an optional tag) is stored in config.json families and drives:
+  * where user submissions from that family are queued,
+  * where /new publishes and /change / /remove operate.
+"""
+# re: chat-ref normalization and URL checks; shlex: quoted tag parsing; escape: HTML safety.
 import re
 import shlex
 from html import escape
 
+# Router/Bot/F: routing and API; TelegramBadRequest: expected get_chat failures;
+# Command/CommandObject: slash parsing; Message: updates.
 from aiogram import Router, Bot, F
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
+# config: binding CRUD; InModGroup: restrict everything here to the mod group.
 from bot.config_manager import config
 from bot.filters import InModGroup
 
@@ -15,6 +26,7 @@ router.message.filter(InModGroup())
 
 
 def build_help_text() -> str:
+    """Compose the group /help overview, including the live template count."""
     sample_count = sum(
         len(family.get("samples", {}))
         for family in config.data.get("families", {}).values()
@@ -61,12 +73,18 @@ def build_help_text() -> str:
 
 
 def normalize_chat_ref(raw: str) -> str:
-    """Normalize a user-provided link/username into a bot.get_chat() argument."""
+    """Normalize a user-supplied channel reference into a bot.get_chat() argument.
+
+    Accepts t.me URLs (with or without scheme/www), `c/<internal>` private links,
+    invite links (`+hash`, `joinchat/hash`), numeric ids and @usernames.
+    """
     s = raw.strip().strip('"').strip("'")
+    # Strip a leading t.me URL prefix so only the path/username part remains.
     s = re.sub(r"^(https?://)?(www\.)?t\.me/", "", s, flags=re.IGNORECASE)
     s = s.split("?")[0].rstrip("/")
 
     if s.startswith("c/"):
+        # Private channel/topic link: c/<internal_id>/... -> -100<internal_id>.
         parts = s.split("/")
         if len(parts) >= 2 and parts[1].isdigit():
             return f"-100{parts[1]}"
@@ -75,6 +93,7 @@ def normalize_chat_ref(raw: str) -> str:
     if s.startswith("joinchat/"):
         return f"https://t.me/{s}"
 
+    # Public reference: keep only the first path segment (username or numeric id).
     s = s.split("/")[0]
     if s.startswith("@"):
         s = s[1:]
@@ -84,6 +103,7 @@ def normalize_chat_ref(raw: str) -> str:
 
 
 def topic_url(mod_group_id: int, topic_id: int) -> str:
+    """Build a clickable t.me/c link to a forum topic of the mod group."""
     internal = str(abs(mod_group_id))
     if internal.startswith("100"):
         internal = internal[3:]
@@ -91,6 +111,10 @@ def topic_url(mod_group_id: int, topic_id: int) -> str:
 
 
 def parse_link_args(raw: str) -> tuple[str, str]:
+    """Split `/link` arguments into (chat_ref, tag) using shell-like quoting.
+
+    The tag may be quoted (`/link @ch "My Tag"`); an absent tag returns "".
+    """
     parts = shlex.split(raw)
     if not parts:
         return "", ""
@@ -98,6 +122,11 @@ def parse_link_args(raw: str) -> tuple[str, str]:
 
 
 def get_topic_title_from_message(message: Message) -> str | None:
+    """Extract the forum topic title from topic-created/edited service messages.
+
+    Checks the message itself first, then the replied-to message, because /link
+    is often sent as a reply right after topic creation.
+    """
     for candidate in (message, message.reply_to_message):
         if candidate is None:
             continue
@@ -111,6 +140,7 @@ def get_topic_title_from_message(message: Message) -> str | None:
 
 @router.message(F.forum_topic_created)
 async def track_topic_created(message: Message):
+    """Cache the title of a newly created forum topic for display names."""
     topic_id = message.message_thread_id or message.message_id
     title = get_topic_title_from_message(message)
     if title:
@@ -119,6 +149,7 @@ async def track_topic_created(message: Message):
 
 @router.message(F.forum_topic_edited)
 async def track_topic_edited(message: Message):
+    """Refresh the cached title when a forum topic is renamed."""
     topic_id = message.message_thread_id
     title = get_topic_title_from_message(message)
     if topic_id and title:
@@ -127,11 +158,17 @@ async def track_topic_edited(message: Message):
 
 @router.message(Command("help"))
 async def cmd_help(message: Message):
+    """Send the group command reference (works in any mod-group thread)."""
     await message.answer(build_help_text(), parse_mode="HTML")
 
 
 @router.message(Command("link"))
 async def cmd_link(message: Message, command: CommandObject, bot: Bot):
+    """Bind the current forum topic to a channel: `/link <url|@username> [tag]`.
+
+    Verifies that the chat exists, that the bot is a member, and that it has
+    administrator rights with the `can_post_messages` permission before saving.
+    """
     topic_id = message.message_thread_id
     if not topic_id:
         return await message.reply(
@@ -178,6 +215,7 @@ async def cmd_link(message: Message, command: CommandObject, bot: Bot):
             parse_mode="HTML"
         )
 
+    # The bot must be able to post; creator/administrator without posting rights is rejected.
     if member.status not in ("administrator", "creator"):
         return await message.reply(
             "⚠️ The bot is not an administrator of the target chat. Add the bot as an admin."
@@ -216,6 +254,7 @@ async def cmd_link(message: Message, command: CommandObject, bot: Bot):
 
 @router.message(Command("unlink"))
 async def cmd_unlink(message: Message):
+    """Remove the channel binding of the current topic (family entry is kept)."""
     topic_id = message.message_thread_id
     if not topic_id:
         return await message.reply(
@@ -243,6 +282,7 @@ async def cmd_unlink(message: Message):
 
 @router.message(Command("get_links"))
 async def cmd_get_links(message: Message):
+    """List every topic -> channel binding with clickable topic and channel links."""
     links = config.list_links()
     if not links:
         return await message.reply(

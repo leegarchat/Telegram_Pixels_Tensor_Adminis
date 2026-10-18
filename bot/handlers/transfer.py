@@ -1,3 +1,16 @@
+"""Backup and restore: per-topic/all-topic sample exports and full ZIP snapshots.
+
+Export commands (any mod-group member, must run inside a forum topic):
+  /export_config, /export_sample, /export_sample_all, /export_all
+Import commands (reply to the exported document):
+  /import_sample, /import_sample_all (any member),
+  /import_config, /import_all (superadmins only — they overwrite global config).
+
+The bot token is always stripped from exports and re-injected from the live
+config on import, so backups are safe to share.
+"""
+# html: escaping error messages; io/json/os: archive handling; sqlite3: DB snapshots;
+# tempfile: atomic writes; zipfile: full backups; closing/Path: resource handling.
 import html
 import io
 import json
@@ -9,23 +22,30 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+# Bot/Router: API and routing; Command: slash parsing;
+# BufferedInputFile/Message: sending documents and reading replies.
 from aiogram import Bot, Router
 from aiogram.filters import Command
 from aiogram.types import BufferedInputFile, Message
 
+# config: live settings + save path; DATABASE_PATH/post_links: SQLite store + reinit;
+# filters: group and superadmin gates; parse_body: template validation.
 from bot.config_manager import config
 from bot.database import DATABASE_PATH, post_links
 from bot.filters import InModGroup, IsSuperAdmin
 from bot.samples import parse_body
 
+# Every handler here is limited to the moderation group.
 router = Router()
 router.message.filter(InModGroup())
 
+# Safety caps for incoming import documents (raw file and uncompressed ZIP total).
 MAX_IMPORT_SIZE = 20 * 1024 * 1024
 MAX_ARCHIVE_CONTENT_SIZE = 50 * 1024 * 1024
 
 
 def strip_bot_tokens(value: Any) -> Any:
+    """Recursively remove any `bot_token` key (any case) from exported structures."""
     if isinstance(value, dict):
         return {
             key: strip_bot_tokens(item)
@@ -38,11 +58,17 @@ def strip_bot_tokens(value: Any) -> Any:
 
 
 def exported_config_bytes() -> bytes:
+    """Serialize the live config without the bot token for export."""
     payload = strip_bot_tokens(config.data)
     return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
 
 
 def validate_config_payload(payload: Any) -> dict[str, Any]:
+    """Validate an imported config document and re-attach the live bot token.
+
+    Raises:
+        ValueError: payload is not an object or lacks a `families` mapping.
+    """
     if not isinstance(payload, dict):
         raise ValueError("The config document must contain a JSON object.")
     if not isinstance(payload.get("families"), dict):
@@ -51,11 +77,13 @@ def validate_config_payload(payload: Any) -> dict[str, Any]:
         raise ValueError("The config 'admins' value must be a list.")
 
     safe_payload = strip_bot_tokens(payload)
+    # Never trust an imported token (exports omit it); keep the running bot's token.
     safe_payload["bot_token"] = config.data["bot_token"]
     return safe_payload
 
 
 def write_atomic(path: Path, data: bytes) -> None:
+    """Write a file atomically: temp file + fsync + os.replace, with cleanup."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
@@ -70,11 +98,20 @@ def write_atomic(path: Path, data: bytes) -> None:
 
 
 def remove_database_sidecars() -> None:
+    """Delete SQLite -wal/-shm/-journal files after a database replace."""
     for suffix in ("-wal", "-shm", "-journal"):
         Path(f"{DATABASE_PATH}{suffix}").unlink(missing_ok=True)
 
 
 def validate_samples_payload(samples: Any) -> dict[str, dict[str, str]]:
+    """Validate an imported {sample_key: sample} mapping.
+
+    Each sample needs string `name`/`body`, a parseable non-empty body, and a
+    boolean `append_submit_link` flag.
+
+    Raises:
+        ValueError: any structural or placeholder problem.
+    """
     if not isinstance(samples, dict):
         raise ValueError("The samples value must be a JSON object.")
 
@@ -101,6 +138,7 @@ def validate_samples_payload(samples: Any) -> dict[str, dict[str, str]]:
 
 
 def sample_export_for_family(family_key: str, family: dict[str, Any]) -> dict[str, Any]:
+    """Build the versioned export envelope for one topic's template set."""
     return {
         "format": "tgadmin-samples-v1",
         "scope": "topic",
@@ -112,6 +150,7 @@ def sample_export_for_family(family_key: str, family: dict[str, Any]) -> dict[st
 
 
 def current_topic_family(message: Message):
+    """Resolve the linked (family_key, family) for the message's topic, or (None, None)."""
     if message.message_thread_id is None:
         return None, None
     family_key, family = config.find_family_by_topic(message.message_thread_id)
@@ -121,6 +160,7 @@ def current_topic_family(message: Message):
 
 
 async def require_topic(message: Message) -> bool:
+    """Reject commands sent outside a forum topic (all exports need topic context)."""
     if message.message_thread_id is None:
         await message.reply("Run this command inside a forum topic.")
         return False
@@ -128,6 +168,11 @@ async def require_topic(message: Message) -> bool:
 
 
 async def read_replied_document(message: Message, bot: Bot) -> bytes | None:
+    """Download the document of the replied-to message for import commands.
+
+    Enforces the 20 MB cap both via the Telegram file_size hint and the actual
+    downloaded bytes. Returns None (after replying) when unusable.
+    """
     replied = message.reply_to_message
     if replied is None or replied.document is None:
         await message.reply(
@@ -154,6 +199,7 @@ async def send_document(
     filename: str,
     caption: str,
 ) -> None:
+    """Send an in-memory document back into the same forum topic."""
     await bot.send_document(
         chat_id=message.chat.id,
         message_thread_id=message.message_thread_id,
@@ -163,6 +209,7 @@ async def send_document(
 
 
 def decode_json(data: bytes) -> Any:
+    """Decode UTF-8 JSON bytes; raises ValueError with a user-friendly message."""
     try:
         return json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -170,6 +217,12 @@ def decode_json(data: bytes) -> Any:
 
 
 def samples_from_document(payload: Any, family_key: str) -> dict[str, dict[str, str]]:
+    """Extract and validate a sample mapping from an import document.
+
+    Accepts three shapes: a bare {key: sample} map, a topic export envelope
+    with a top-level `samples` key, or a full-config/all-samples document whose
+    `families[family_key]` entry provides the samples.
+    """
     if not isinstance(payload, dict):
         raise ValueError("The sample document must contain a JSON object.")
 
@@ -186,6 +239,7 @@ def samples_from_document(payload: Any, family_key: str) -> dict[str, dict[str, 
 
 
 def sqlite_snapshot(path: Path) -> bytes:
+    """Create a consistent SQLite backup via the backup API into memory."""
     with tempfile.TemporaryDirectory() as directory:
         snapshot_path = Path(directory) / "snapshot.sqlite3"
         source = sqlite3.connect(path)
@@ -199,6 +253,11 @@ def sqlite_snapshot(path: Path) -> bytes:
 
 
 def validate_database_file(path: Path) -> None:
+    """Check a candidate database: integrity_check must pass and post_links must exist.
+
+    Raises:
+        ValueError: file is not a valid DB, fails integrity check, or has a wrong schema.
+    """
     try:
         with closing(sqlite3.connect(path)) as connection:
             integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
@@ -215,6 +274,11 @@ def validate_database_file(path: Path) -> None:
 
 
 def install_full_backup(config_payload: Any, database_bytes: bytes) -> None:
+    """Atomically install a full backup (config + SQLite) with rollback on failure.
+
+    The config is validated first (token preserved), the database is validated
+    in a staging directory, and previous files are restored when the replace fails.
+    """
     safe_config = validate_config_payload(config_payload)
     config_bytes = json.dumps(safe_config, ensure_ascii=False, indent=2).encode("utf-8")
 
@@ -224,6 +288,7 @@ def install_full_backup(config_payload: Any, database_bytes: bytes) -> None:
         staged_database.write_bytes(database_bytes)
         validate_database_file(staged_database)
 
+        # Keep restorable copies so a failed install never leaves a half-written state.
         old_config = config.path.read_bytes()
         old_database = sqlite_snapshot(DATABASE_PATH) if DATABASE_PATH.exists() else None
         try:
@@ -239,12 +304,14 @@ def install_full_backup(config_payload: Any, database_bytes: bytes) -> None:
             write_atomic(config.path, old_config)
             raise
 
+    # Point the live process at the new data and ensure tables exist.
     config.data = safe_config
     post_links.initialize()
 
 
 @router.message(Command("export_config"))
 async def cmd_export_config(message: Message, bot: Bot):
+    """Export the full config (token stripped) as JSON into the current topic."""
     if not await require_topic(message):
         return
     await send_document(
@@ -258,6 +325,7 @@ async def cmd_export_config(message: Message, bot: Bot):
 
 @router.message(IsSuperAdmin(), Command("import_config"))
 async def cmd_import_config(message: Message, bot: Bot):
+    """Import a config JSON by replying to it (superadmins only; token preserved)."""
     if not await require_topic(message):
         return
     data = await read_replied_document(message, bot)
@@ -277,6 +345,7 @@ async def cmd_import_config(message: Message, bot: Bot):
 
 @router.message(Command("export_sample"))
 async def cmd_export_sample(message: Message, bot: Bot):
+    """Export the current topic's template set as a versioned JSON envelope."""
     if not await require_topic(message):
         return
     family_key, family = current_topic_family(message)
@@ -295,6 +364,7 @@ async def cmd_export_sample(message: Message, bot: Bot):
 
 @router.message(Command("import_sample"))
 async def cmd_import_sample(message: Message, bot: Bot):
+    """Replace the current topic's templates from a replied-to export document."""
     if not await require_topic(message):
         return
     family_key, family = current_topic_family(message)
@@ -317,6 +387,7 @@ async def cmd_import_sample(message: Message, bot: Bot):
 
 @router.message(Command("export_sample_all"))
 async def cmd_export_sample_all(message: Message, bot: Bot):
+    """Export template sets of ALL topics into one JSON document."""
     if not await require_topic(message):
         return
     families = {
@@ -341,6 +412,11 @@ async def cmd_export_sample_all(message: Message, bot: Bot):
 
 @router.message(Command("import_sample_all"))
 async def cmd_import_sample_all(message: Message, bot: Bot):
+    """Import template sets for all topics, matching entries by key or topic_id.
+
+    Entries whose target family is unknown or unlinked are skipped and reported
+    as unmatched; matched families are replaced wholesale.
+    """
     if not await require_topic(message):
         return
     data = await read_replied_document(message, bot)
@@ -364,8 +440,10 @@ async def cmd_import_sample_all(message: Message, bot: Bot):
                 target_family
                 and (source_topic_id is None or target_family.get("topic_id") == source_topic_id)
             ):
+                # Same key and compatible topic — direct match.
                 target_key = source_key
             elif source_topic_id is not None:
+                # Otherwise match by topic id (handles renamed family keys).
                 target_key, target_family = config.find_family_by_topic(source_topic_id)
             if target_key is None or not target_family or not target_family.get("channel_id"):
                 unmatched.append(str(source_key))
@@ -386,6 +464,7 @@ async def cmd_import_sample_all(message: Message, bot: Bot):
 
 @router.message(Command("export_all"))
 async def cmd_export_all(message: Message, bot: Bot):
+    """Export a full ZIP backup: token-less config + SQLite snapshot + manifest."""
     if not await require_topic(message):
         return
     archive_data = io.BytesIO()
@@ -407,6 +486,7 @@ async def cmd_export_all(message: Message, bot: Bot):
 
 @router.message(IsSuperAdmin(), Command("import_all"))
 async def cmd_import_all(message: Message, bot: Bot):
+    """Restore a full ZIP backup by replying to it (superadmins only; token preserved)."""
     if not await require_topic(message):
         return
     data = await read_replied_document(message, bot)

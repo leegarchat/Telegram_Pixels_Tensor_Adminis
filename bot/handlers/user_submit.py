@@ -1,13 +1,30 @@
+"""Private-chat submission wizard: guides users from /start to moderation review.
+
+Flow:
+  1. begin_submission — rate-limit check, then family picker (SubmitPost.family).
+  2. step_family/step_sample — choose channel family and post template.
+  3. ask_field + step_field_* — answer each template Block in order
+     (text/url/urls via message, photo via image, bool via buttons, Skip for optional).
+  4. show_preview — render_sample(), enforce Telegram length limits.
+  5. confirm_send — post header + content to the mod-group topic, persist to SQLite.
+
+All messages here are restricted to private chats (router filters below).
+"""
+# html/time: escaping display names and rate-limit bookkeeping.
 import html
 import time
 
+# Router/F/Bot: aiogram routing primitives; Message/CallbackQuery: update types;
+# CommandStart: /start filter; FSMContext: per-user wizard state.
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 
+# config: families/templates/cooldown/admins; post_links: SQLite persistence.
 from bot.config_manager import config
 from bot.database import post_links
+# Template engine pieces: limits, Block model, footer, parsing, rendering, measuring, validation.
 from bot.samples import (
     PHOTO_CAPTION_LIMIT,
     TEXT_MESSAGE_LIMIT,
@@ -18,6 +35,7 @@ from bot.samples import (
     telegram_text_length,
     validate_answer,
 )
+# Wizard states and inline/reply keyboards for each step.
 from bot.states import SubmitPost
 from bot.keyboards.inline import (
     get_families_kb, get_samples_kb, get_skip_kb, get_bool_kb,
@@ -26,13 +44,17 @@ from bot.keyboards.inline import (
     REQUEST_PUBLICATION_BUTTON,
 )
 
+# Accept only private-chat updates; group updates are handled by other routers.
 router = Router()
 router.message.filter(F.chat.type == "private")
 router.callback_query.filter(F.message.chat.type == "private")
+# In-memory per-user timestamp of the last successful submission (resets on restart).
 user_cooldowns = {}
 
 
 def format_post(data: dict) -> str:
+    """Compose the final moderated text: rendered body + optional submit footer."""
+    # Look up the template to learn its footer setting; fall back to stored FSM override.
     sample = config.get_sample(data["family"], data["sample"])
     append_submit_link = data.get(
         "append_submit_link",
@@ -47,27 +69,33 @@ def format_post(data: dict) -> str:
 
 
 def format_user_tag(user) -> str:
+    """Render a clickable moderator-visible author tag: @username or tg://user link."""
     if user.username:
         return f"@{user.username}"
+    # Fall back to a mention link with an HTML-escaped full name.
     full_name = html.escape(user.full_name)
     return f"<a href='tg://user?id={user.id}'>{full_name}</a>"
 
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
+    """Handle /start in DMs by (re)starting the submission wizard."""
     await begin_submission(message, state)
 
 
 @router.message(F.text == REQUEST_PUBLICATION_BUTTON)
 async def cmd_request_publication(message: Message, state: FSMContext):
+    """Handle the persistent 'Request a publication' reply-keyboard button."""
     await begin_submission(message, state)
 
 
 async def begin_submission(message: Message, state: FSMContext):
+    """Rate-limit check, then show the family picker (or an explanatory notice)."""
     now = time.time()
     cd = config.data.get("cooldown_seconds", 600)
     last_time = user_cooldowns.get(message.from_user.id, 0)
 
+    # Superadmins bypass the cooldown; everyone else must wait `cd` seconds.
     if not config.is_admin(message.from_user.id) and (now - last_time) < cd:
         rem = int(cd - (now - last_time))
         return await message.answer(
@@ -75,6 +103,7 @@ async def begin_submission(message: Message, state: FSMContext):
             reply_markup=get_user_menu_kb(),
         )
 
+    # Only families that are fully linked AND have at least one template are offered.
     families = {
         key: family for key, family in config.data.get("families", {}).items()
         if family.get("topic_id") is not None
@@ -87,6 +116,7 @@ async def begin_submission(message: Message, state: FSMContext):
             reply_markup=get_user_menu_kb(),
         )
 
+    # Reset any stale wizard state, enter the family step, and show pickers.
     await state.clear()
     await state.set_state(SubmitPost.family)
     await message.answer(
@@ -101,8 +131,10 @@ async def begin_submission(message: Message, state: FSMContext):
 
 @router.callback_query(SubmitPost.family, F.data.startswith("fam:"))
 async def step_family(call: CallbackQuery, state: FSMContext):
+    """Store the chosen family and advance to the template picker."""
     fam_key = call.data.split(":", 1)[1]
     family = config.get_family(fam_key)
+    # The family may have been unlinked or deleted after the keyboard was shown.
     if not family.get("channel_id") or family.get("topic_id") is None:
         return await call.answer("⚠️ This family is not linked to a channel.", show_alert=True)
 
@@ -122,6 +154,7 @@ async def step_family(call: CallbackQuery, state: FSMContext):
 
 @router.callback_query(SubmitPost.sample, F.data.startswith("sample:"))
 async def step_sample(call: CallbackQuery, state: FSMContext):
+    """Parse the chosen template into Blocks and ask the first field question."""
     sample_key = call.data.split(":", 1)[1]
     data = await state.get_data()
     family_key = data.get("family")
@@ -129,6 +162,7 @@ async def step_sample(call: CallbackQuery, state: FSMContext):
     if not sample:
         return await call.answer("⚠️ Template not found.", show_alert=True)
 
+    # Pre-parse placeholders once; the wizard iterates blocks[idx] in order.
     blocks, _ = parse_body(sample["body"])
 
     await state.update_data(
@@ -145,23 +179,28 @@ async def step_sample(call: CallbackQuery, state: FSMContext):
 
 
 async def ask_field(target: Message, state: FSMContext):
+    """Prompt the user for blocks[idx], or show the preview when all are answered."""
     data = await state.get_data()
     blocks = data.get("blocks", [])
     idx = data.get("idx", 0)
 
+    # All fields collected — move to the preview/confirm stage.
     if idx >= len(blocks):
         return await show_preview(target, state)
 
     block = blocks[idx]
+    # Bool fields get Yes/No (+Skip) buttons; other optional fields get a Skip button.
     if block["type"] == "bool":
         kb = get_bool_kb(block["optional"])
     else:
         kb = get_skip_kb() if block["optional"] else None
+    # Numbered header helps users track progress through long templates.
     header = f"<b>{idx + 1}/{len(blocks)}</b>\n"
     await target.answer(header + block["prompt"], parse_mode="HTML", reply_markup=kb)
 
 
 async def store_and_advance(message: Message, state: FSMContext, value):
+    """Save one validated answer and advance the wizard to the next field."""
     data = await state.get_data()
     idx = data["idx"]
     block = data["blocks"][idx]
@@ -173,9 +212,11 @@ async def store_and_advance(message: Message, state: FSMContext, value):
 
 @router.message(SubmitPost.field, F.photo)
 async def step_field_photo(message: Message, state: FSMContext):
+    """Handle photo uploads for `photo`-type fields (stores the largest file_id)."""
     data = await state.get_data()
     block = data["blocks"][data["idx"]]
     if block["type"] != "photo":
+        # User sent a photo while a text/url field was expected — keep the wizard in place.
         return await message.answer(
             f"⚠️ The current field is <b>{block['key']}</b> (type: {block['type']}), not a photo.",
             parse_mode="HTML"
@@ -186,6 +227,7 @@ async def step_field_photo(message: Message, state: FSMContext):
 
 @router.message(SubmitPost.field, F.text)
 async def step_field_text(message: Message, state: FSMContext):
+    """Handle text answers: validate url/urls strictly, keep HTML for text fields."""
     data = await state.get_data()
     block = data["blocks"][data["idx"]]
     if block["type"] == "photo":
@@ -196,6 +238,8 @@ async def step_field_text(message: Message, state: FSMContext):
     if block["type"] == "bool":
         return await message.answer("Please select Yes or No using the buttons above.")
 
+    # url/urls answers use raw text (no HTML entities); text answers keep message.html_text
+    # so user bold/italic/links survive into the rendered post.
     raw_input = (
         message.text
         if block["type"] in ("url", "urls")
@@ -209,6 +253,7 @@ async def step_field_text(message: Message, state: FSMContext):
 
 @router.callback_query(SubmitPost.field, F.data.startswith("field:bool:"))
 async def step_field_bool(call: CallbackQuery, state: FSMContext):
+    """Handle Yes/No button presses for `bool` fields (stores the configured output text)."""
     data = await state.get_data()
     idx = data.get("idx", 0)
     blocks = data.get("blocks", [])
@@ -220,6 +265,7 @@ async def step_field_bool(call: CallbackQuery, state: FSMContext):
     if block["type"] != "bool" or choice not in {"yes", "no"}:
         return await call.answer("This answer does not match the current field.", show_alert=True)
 
+    # Map the button to the template's Yes/No output text (either may be empty).
     answer_key = "yes_text" if choice == "yes" else "no_text"
     await call.answer()
     await call.message.edit_reply_markup(reply_markup=None)
@@ -228,6 +274,7 @@ async def step_field_bool(call: CallbackQuery, state: FSMContext):
 
 @router.callback_query(SubmitPost.field, F.data == "field:skip")
 async def step_field_skip(call: CallbackQuery, state: FSMContext):
+    """Skip an optional field (stores None so the renderer drops its line)."""
     data = await state.get_data()
     idx = data.get("idx", 0)
     blocks = data.get("blocks", [])
@@ -245,10 +292,12 @@ async def step_field_skip(call: CallbackQuery, state: FSMContext):
 
 
 async def show_preview(message: Message, state: FSMContext):
+    """Render the completed post, enforce length limits, and request confirmation."""
     data = await state.get_data()
     sample = config.get_sample(data["family"], data["sample"])
     body, photo_id = render_sample(sample["body"], data.get("answers", {}))
 
+    # A template where every field was skipped renders empty — nothing to send.
     if not body and not photo_id:
         await state.clear()
         return await message.answer(
@@ -259,6 +308,7 @@ async def show_preview(message: Message, state: FSMContext):
     text_length = telegram_text_length(final_text)
     limit = PHOTO_CAPTION_LIMIT if photo_id else TEXT_MESSAGE_LIMIT
     if text_length > limit:
+        # Telegram would reject the post; force a restart with a shorter text.
         excess = text_length - limit
         limit_kind = "caption" if photo_id else "message"
         await state.set_state(SubmitPost.too_long)
@@ -269,6 +319,7 @@ async def show_preview(message: Message, state: FSMContext):
             reply_markup=get_restart_kb(),
         )
 
+    # Persist the render for confirm_send, then show it with Send/Restart buttons.
     await state.update_data(final_text=final_text, photo_id=photo_id)
     await state.set_state(SubmitPost.confirm)
 
@@ -291,6 +342,7 @@ async def show_preview(message: Message, state: FSMContext):
 @router.callback_query(SubmitPost.confirm, F.data == "submit:restart")
 @router.callback_query(SubmitPost.too_long, F.data == "submit:restart")
 async def confirm_restart(call: CallbackQuery, state: FSMContext):
+    """Discard the current draft and return to the family picker."""
     await state.clear()
     await call.message.delete()
     await state.set_state(SubmitPost.family)
@@ -299,10 +351,12 @@ async def confirm_restart(call: CallbackQuery, state: FSMContext):
 
 @router.callback_query(SubmitPost.confirm, F.data == "submit:send")
 async def confirm_send(call: CallbackQuery, state: FSMContext, bot: Bot):
+    """Forward the approved-by-user draft to the mod-group topic and queue it."""
     data = await state.get_data()
     fam_cfg = config.get_family(data["family"])
     mod_group_id = config.data.get("mod_group_id")
 
+    # Header identifies the author and target so moderators have full context.
     user_tag = format_user_tag(call.from_user)
     family_name = html.escape(str(fam_cfg.get("name", data["family"])))
     sample_name = html.escape(str(data.get("sample_name", "")))
@@ -320,6 +374,7 @@ async def confirm_send(call: CallbackQuery, state: FSMContext, bot: Bot):
         disable_web_page_preview=True,
     )
 
+    # Content message carries the Approve/Reject buttons; photo posts become captions.
     if data.get("photo_id"):
         sent = await bot.send_photo(
             chat_id=mod_group_id,
@@ -339,6 +394,7 @@ async def confirm_send(call: CallbackQuery, state: FSMContext, bot: Bot):
             reply_markup=get_mod_decision_kb()
         )
 
+    # Persist under both message ids so /approve and /cancel work as replies to either.
     post_links.add_pending_submission(
         mod_chat_id=mod_group_id,
         header_message_id=header_message.message_id,
@@ -348,6 +404,7 @@ async def confirm_send(call: CallbackQuery, state: FSMContext, bot: Bot):
         text=data["final_text"],
         photo_id=data.get("photo_id"),
     )
+    # Start the cooldown window for this user (in-memory; resets on bot restart).
     user_cooldowns[call.from_user.id] = time.time()
 
     await state.clear()

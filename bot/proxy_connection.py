@@ -1,3 +1,12 @@
+"""Proxy support: discovery, validation and a TLS-relaxed aiohttp session.
+
+The bot is often deployed behind restrictive networks, so outbound Telegram
+API traffic may require a SOCKS5/HTTP proxy. This module:
+  1. Discovers proxy config files (env var, config.json, companion service, defaults).
+  2. Validates candidates (TCP reachability + real Telegram getMe call).
+  3. Provides ProxyAiohttpSession, an aiogram session with disabled SSL checks.
+"""
+# asyncio: run blocking socket checks in a thread; json/os/socket/time: config + probing.
 import asyncio
 import json
 import logging
@@ -7,18 +16,26 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
+# AiohttpSession is aiogram's pluggable HTTP layer for Bot API calls.
 from aiogram.client.session.aiohttp import AiohttpSession
 
+# Global config singleton: may hold a `proxy_json` path; also provides bot_token for checks.
 from bot.config_manager import config
 
 log = logging.getLogger(__name__)
+# Last successfully validated proxy dict (or None for direct connection).
 ACTIVE_PROXY: dict | None = None
 
 
 class ProxyAiohttpSession(AiohttpSession):
-    """Create proxy connectors with the same unverified TLS behavior as svc."""
+    """aiogram session that disables SSL verification for proxy connections.
+
+    Some proxies intercept TLS; the default strict verification would then fail.
+    The flag is restored after session creation so global state is not leaked.
+    """
 
     async def create_session(self):
+        """Create the underlying aiohttp session with `ssl=False`, then restore."""
         previous_ssl = self._connector_init.get("ssl")
         self._connector_init["ssl"] = False
         try:
@@ -28,6 +45,13 @@ class ProxyAiohttpSession(AiohttpSession):
 
 
 def proxy_json_candidates() -> list[Path]:
+    """Collect proxy.json file locations to try, in priority order, deduplicated.
+
+    Sources:
+      1. PROXY_JSON env var or config.json `proxy_json`/`PROXY_JSON` value.
+      2. Companion service config at ~/bot/config.json (PROXY_JSON key, any case).
+      3. Project defaults: <root>/proxy.json, <root>/proxy/proxy.json, ~/proxy/proxy.json.
+    """
     configured_path = (
         os.environ.get("PROXY_JSON")
         or config.data.get("PROXY_JSON")
@@ -54,6 +78,7 @@ def proxy_json_candidates() -> list[Path]:
         except (OSError, json.JSONDecodeError):
             pass
 
+    # Built-in fallback locations relative to the project root and home directory.
     project_root = Path(__file__).resolve().parent.parent
     candidates.extend([
         project_root / "proxy.json",
@@ -61,6 +86,7 @@ def proxy_json_candidates() -> list[Path]:
         Path.home() / "proxy" / "proxy.json",
     ])
 
+    # Deduplicate while preserving order (resolve symlinks for correct comparison).
     unique = []
     seen = set()
     for candidate in candidates:
@@ -72,10 +98,16 @@ def proxy_json_candidates() -> list[Path]:
 
 
 def find_proxy_json() -> Path | None:
+    """Return the first candidate proxy.json file that exists, or None."""
     return next((path for path in proxy_json_candidates() if path.is_file()), None)
 
 
 def _proxy_entries(items) -> list[dict]:
+    """Normalize raw JSON proxy entries into {id, name, url, enabled} dicts.
+
+    Accepts either plain URL strings (auto-numbered, always enabled) or dicts
+    with `url`, optional `id`/`name`/`enabled` keys. Malformed entries are skipped.
+    """
     if not isinstance(items, list):
         return []
     proxies = []
@@ -93,11 +125,16 @@ def _proxy_entries(items) -> list[dict]:
 
 
 def load_proxies() -> tuple[Path | None, list[dict]]:
-    """Load configured proxies, then fall back to the project's proxy.txt."""
+    """Load the proxy list from proxy.json, or fall back to proxy.txt (single line).
+
+    Returns:
+        (source path or None, list of normalized proxy dicts, possibly empty).
+    """
     proxy_json = find_proxy_json()
     if proxy_json:
         try:
             data = json.loads(proxy_json.read_text(encoding="utf-8"))
+            # File may be either {"proxies": [...]} or a bare [...] list.
             items = data.get("proxies", []) if isinstance(data, dict) else data
             proxies = _proxy_entries(items)
             if proxies:
@@ -105,6 +142,7 @@ def load_proxies() -> tuple[Path | None, list[dict]]:
         except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
             log.warning("Could not read proxy configuration at %s: %s", proxy_json, error)
 
+    # Legacy fallback: <root>/proxy.txt with a single proxy URL on the first non-comment line.
     proxy_txt = Path(__file__).resolve().parent.parent / "proxy.txt"
     try:
         if proxy_txt.is_file():
@@ -118,6 +156,11 @@ def load_proxies() -> tuple[Path | None, list[dict]]:
 
 
 def parse_proxy_url(proxy_url: str) -> tuple[str, str, str, str, int]:
+    """Split a proxy URL into (scheme, username, password, host, port).
+
+    Raises:
+        ValueError: unsupported scheme or missing host/port.
+    """
     parsed = urlparse(proxy_url.strip())
     scheme = parsed.scheme.lower()
     if scheme not in {"socks5", "socks5h", "http", "https"}:
@@ -128,6 +171,7 @@ def parse_proxy_url(proxy_url: str) -> tuple[str, str, str, str, int]:
 
 
 def mask_proxy_url(proxy_url: str) -> str:
+    """Return a log-safe proxy identifier (scheme://host:port, no credentials)."""
     try:
         parsed = urlparse(proxy_url)
         return f"{parsed.scheme}://{parsed.hostname or '?'}:{parsed.port or '?'}"
@@ -136,6 +180,7 @@ def mask_proxy_url(proxy_url: str) -> str:
 
 
 def _tcp_ping(host: str, port: int, timeout: float = 5.0) -> tuple[bool, float]:
+    """Blocking TCP connect check; returns (reachable, latency_ms). Runs in a thread."""
     started = time.monotonic()
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -145,7 +190,11 @@ def _tcp_ping(host: str, port: int, timeout: float = 5.0) -> tuple[bool, float]:
 
 
 async def validate_via_telegram(proxy_url: str, timeout: float = 12.0) -> bool:
-    """Confirm the proxy can reach Telegram's getMe endpoint for this bot."""
+    """Confirm the proxy can actually reach Telegram by calling getMe for this bot.
+
+    SOCKS proxies use aiohttp-socks ProxyConnector; HTTP proxies use aiohttp's
+    built-in `proxy=` argument. Both disable SSL verification like the main session.
+    """
     import aiohttp
 
     token = config.data.get("bot_token")
@@ -178,7 +227,11 @@ async def validate_via_telegram(proxy_url: str, timeout: float = 12.0) -> bool:
 
 
 async def pick_first_valid(proxies: list[dict]) -> dict | None:
-    """Select the first enabled proxy that passes TCP and Telegram checks."""
+    """Return the first enabled proxy that passes TCP and Telegram validation.
+
+    Disabled entries and malformed URLs are skipped with a warning; unreachable
+    or Telegram-blocked proxies fall through to the next candidate.
+    """
     for proxy in proxies:
         if not proxy.get("enabled", True):
             continue
@@ -188,6 +241,7 @@ async def pick_first_valid(proxies: list[dict]) -> dict | None:
             log.warning("Skipping invalid proxy #%s: %s", proxy.get("id", "?"), error)
             continue
 
+        # Blocking socket check offloaded to a worker thread to keep the loop responsive.
         reachable, latency_ms = await asyncio.to_thread(_tcp_ping, host, port)
         if not reachable:
             log.info("Proxy #%s is unreachable; trying the next proxy.", proxy.get("id", "?"))
@@ -207,6 +261,11 @@ async def pick_first_valid(proxies: list[dict]) -> dict | None:
 
 
 async def select_active_proxy() -> dict | None:
+    """Load proxies and select the first working one; cache it in ACTIVE_PROXY.
+
+    Returns None when no proxies are configured or none work — the caller
+    (main.create_bot) then connects directly to Telegram.
+    """
     global ACTIVE_PROXY
     source, proxies = load_proxies()
     if not proxies:

@@ -1,8 +1,17 @@
+"""Superadmin configuration commands (/cfg_*) for runtime bot settings.
+
+All commands require the sender to be listed in `config.json -> admins`
+(IsSuperAdmin). cfg_set_modgroup works in any chat; the rest additionally
+require the moderation group context (InModGroup).
+"""
+# json: pretty-printing config for /cfg_show.
 import json
+# Router: handler registration; Message: updates; Command/CommandObject: slash parsing.
 from aiogram import Router
 from aiogram.types import Message
 from aiogram.filters import Command, CommandObject
 
+# config: live settings store; filters: group-membership and admin gates.
 from bot.config_manager import config
 from bot.filters import InModGroup, IsSuperAdmin
 
@@ -11,6 +20,7 @@ router = Router()
 
 @router.message(InModGroup(), IsSuperAdmin(), Command("cfg_show"))
 async def cmd_cfg_show(message: Message):
+    """Dump the current config.json with the bot token masked, wrapped in HTML <pre>."""
     safe_copy = dict(config.data)
     safe_copy["bot_token"] = "***HIDDEN***"
     formatted = json.dumps(safe_copy, indent=2, ensure_ascii=False)
@@ -19,6 +29,10 @@ async def cmd_cfg_show(message: Message):
 
 @router.message(IsSuperAdmin(), Command("cfg_set_modgroup"))
 async def cmd_set_modgroup(message: Message, command: CommandObject):
+    """Point the bot at a new moderation supergroup: `/cfg_set_modgroup -100123...`.
+
+    Works outside the mod group too (useful for the initial setup or recovery).
+    """
     if not command.args or not command.args.lstrip("-").isdigit():
         return await message.answer("Usage: <code>/cfg_set_modgroup -100123456789</code>", parse_mode="HTML")
     config.data["mod_group_id"] = int(command.args)
@@ -28,7 +42,11 @@ async def cmd_set_modgroup(message: Message, command: CommandObject):
 
 @router.message(InModGroup(), IsSuperAdmin(), Command("cfg_set_family"))
 async def cmd_set_family(message: Message, command: CommandObject):
-    """Format: /cfg_set_family p8 topic_id channel_id Family Name"""
+    """Create/update a family binding (legacy path): `/cfg_set_family key topic_id channel_id Name`.
+
+    Preserves existing templates for the key; prefer /link for topic-based setup.
+    """
+    # Format: /cfg_set_family p8 14 -1003333333 Pixel 8 Series
     if not command.args:
         return await message.answer(
             "Usage: <code>/cfg_set_family [key] [topic_id] [channel_id] [Name]</code>\n"
@@ -46,6 +64,7 @@ async def cmd_set_family(message: Message, command: CommandObject):
 
 @router.message(InModGroup(), IsSuperAdmin(), Command("cfg_add_admin"))
 async def cmd_add_admin(message: Message, command: CommandObject):
+    """Grant superadmin rights: `/cfg_add_admin <telegram_user_id>` (idempotent)."""
     if not command.args or not command.args.isdigit():
         return await message.answer("Usage: <code>/cfg_add_admin [user_id]</code>", parse_mode="HTML")
     new_id = int(command.args)
@@ -57,6 +76,10 @@ async def cmd_add_admin(message: Message, command: CommandObject):
 
 @router.message(InModGroup(), IsSuperAdmin(), Command("cfg_del_admin"))
 async def cmd_del_admin(message: Message, command: CommandObject):
+    """Revoke superadmin rights: `/cfg_del_admin <telegram_user_id>` (idempotent).
+
+    Note: removing the last admin (including yourself) locks all /cfg_* commands.
+    """
     if not command.args or not command.args.isdigit():
         return await message.answer("Usage: <code>/cfg_del_admin [user_id]</code>", parse_mode="HTML")
     rem_id = int(command.args)
