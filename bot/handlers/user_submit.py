@@ -20,7 +20,7 @@ from bot.samples import (
 )
 from bot.states import SubmitPost
 from bot.keyboards.inline import (
-    get_families_kb, get_samples_kb, get_skip_kb,
+    get_families_kb, get_samples_kb, get_skip_kb, get_bool_kb,
     get_user_confirm_kb, get_mod_decision_kb, get_user_menu_kb,
     get_restart_kb,
     REQUEST_PUBLICATION_BUTTON,
@@ -153,7 +153,10 @@ async def ask_field(target: Message, state: FSMContext):
         return await show_preview(target, state)
 
     block = blocks[idx]
-    kb = get_skip_kb() if block["optional"] else None
+    if block["type"] == "bool":
+        kb = get_bool_kb(block["optional"])
+    else:
+        kb = get_skip_kb() if block["optional"] else None
     header = f"<b>{idx + 1}/{len(blocks)}</b>\n"
     await target.answer(header + block["prompt"], parse_mode="HTML", reply_markup=kb)
 
@@ -190,6 +193,8 @@ async def step_field_text(message: Message, state: FSMContext):
             "⚠️ A photo is expected. Send an image"
             + (" or press \"Skip\"." if block["optional"] else ".")
         )
+    if block["type"] == "bool":
+        return await message.answer("Please select Yes or No using the buttons above.")
 
     raw_input = (
         message.text
@@ -200,6 +205,25 @@ async def step_field_text(message: Message, state: FSMContext):
     if not ok:
         return await message.answer(f"⚠️ {error}\nPlease try again:", parse_mode="HTML")
     await store_and_advance(message, state, value)
+
+
+@router.callback_query(SubmitPost.field, F.data.startswith("field:bool:"))
+async def step_field_bool(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    idx = data.get("idx", 0)
+    blocks = data.get("blocks", [])
+    if idx >= len(blocks):
+        return await call.answer()
+
+    block = blocks[idx]
+    choice = call.data.rsplit(":", 1)[-1]
+    if block["type"] != "bool" or choice not in {"yes", "no"}:
+        return await call.answer("This answer does not match the current field.", show_alert=True)
+
+    answer_key = "yes_text" if choice == "yes" else "no_text"
+    await call.answer()
+    await call.message.edit_reply_markup(reply_markup=None)
+    await store_and_advance(call.message, state, block.get(answer_key, ""))
 
 
 @router.callback_query(SubmitPost.field, F.data == "field:skip")

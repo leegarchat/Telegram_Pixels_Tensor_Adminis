@@ -45,6 +45,18 @@ def get_skip_kb() -> InlineKeyboardMarkup:
     ])
 
 
+def get_bool_kb(optional: bool = False) -> InlineKeyboardMarkup:
+    keyboard = [[
+        InlineKeyboardButton(text="✅ Yes", callback_data="field:bool:yes"),
+        InlineKeyboardButton(text="❌ No", callback_data="field:bool:no"),
+    ]]
+    if optional:
+        keyboard.append([
+            InlineKeyboardButton(text="Skip ➡️", callback_data="field:skip")
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
 def get_user_confirm_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [

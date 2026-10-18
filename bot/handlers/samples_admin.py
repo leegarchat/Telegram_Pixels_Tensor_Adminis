@@ -36,8 +36,11 @@ NEW_SAMPLE_HELP = (
     "  <code>url</code> — a single URL (<code>https://...</code>)\n"
     "  <code>urls</code> — multiple URLs separated by spaces or new lines\n"
     "  <code>photo</code> — banner image for the post\n"
+    "  <code>bool</code> — Yes/No buttons with configured output text for each choice\n"
+    "    <code>{Key | Question | bool | Text for Yes | Text for No}</code>; either output can be empty\n"
     "Prefix the type with <code>?</code> to make the field optional — the user gets "
-    "a \"Skip\" button: <code>?text</code>, <code>?url</code>, <code>?urls</code>, <code>?photo</code>\n\n"
+    "a \"Skip\" button: <code>?text</code>, <code>?url</code>, <code>?urls</code>, "
+    "<code>?photo</code>, <code>?bool</code>\n\n"
     "Templates may also contain fixed text with no placeholders; it is published as written.\n"
     "The submit-link footer is on by default. Use <code>--footer off</code> to disable it "
     "or <code>--footer on</code> to enable it. Updating without this option preserves its setting.\n\n"
@@ -52,6 +55,7 @@ NEW_SAMPLE_HELP = (
     "<code>/new_sample Kernel --footer off\n"
     "🐧 *{Kernel Name | Enter kernel name and build version | text}*\n"
     "📱 *Devices:* {Codename | List supported device codenames | text}\n\n"
+    "📱 *Pixel 8: {Pixel 8 Support | Does this ROM support Pixel 8 (shiba)? | bool | Supports Pixel 8 (shiba) | }*\n\n"
     "🛠 *Changelog:*\n"
     "{Changelog | Describe the list of changes | text}\n\n"
     "⚠️ *Known Issues:*\n"
@@ -154,7 +158,8 @@ async def cmd_new_sample(message: Message):
         return await message.reply(
             f"⚠️ Invalid placeholders:\n{listed}\n\n"
             "Format: <code>{Key | Prompt | type}</code>\n"
-            "Types: text, url, urls, photo; optional field — <code>?text</code>, <code>?photo</code>, etc.\n"
+            "Types: text, url, urls, photo, bool; optional field — <code>?text</code>, <code>?photo</code>, etc.\n"
+            "Boolean fields use <code>{Key | Question | bool | Yes text | No text}</code>.\n"
             "See /new_sample_help for the full guide.",
             parse_mode="HTML"
         )
@@ -295,6 +300,10 @@ async def cmd_sample(message: Message, command: CommandObject):
             f"{' (optional)' if b.optional else ' (required)'}\n"
             f"   Prompt: {html.escape(b.prompt)}"
         )
+        if b.type == "bool":
+            yes_text = html.escape(b.yes_text) if b.yes_text else "(nothing)"
+            no_text = html.escape(b.no_text) if b.no_text else "(nothing)"
+            fields_lines.append(f"   Yes: {yes_text}\n   No: {no_text}")
     if errors:
         fields_lines.append("⚠️ Invalid placeholders: " + ", ".join(html.escape(e) for e in errors))
     fields_text = "\n".join(fields_lines) if fields_lines else "(no fields)"
@@ -317,6 +326,8 @@ async def cmd_sample(message: Message, command: CommandObject):
             answers[b.key] = "https://example.com/1\nhttps://example.com/2"
         elif b.type == "photo":
             answers[b.key] = "[banner image]"
+        elif b.type == "bool":
+            answers[b.key] = b.yes_text or b.no_text or ""
         else:
             answers[b.key] = f"[{b.key}]"
 

@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 BLOCK_RE = re.compile(r"\{([^{}]+)\}")
 BOLD_RE = re.compile(r"\*([^*\n]+)\*")
-VALID_TYPES = {"text", "url", "urls", "photo"}
+VALID_TYPES = {"text", "url", "urls", "photo", "bool"}
 URL_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 PHOTO_CAPTION_LIMIT = 1024
@@ -19,19 +19,37 @@ class Block:
     type: str
     optional: bool
     placeholder: str
+    yes_text: Optional[str] = None
+    no_text: Optional[str] = None
 
 
 def parse_block(raw: str) -> Optional[Block]:
-    """Parse a single placeholder: {Key | Prompt | type} ('?' prefix = optional)."""
+    """Parse a field placeholder, including bool fields with yes/no output text."""
     parts = [p.strip() for p in raw.split("|")]
-    if len(parts) != 3:
+    if len(parts) not in (3, 5):
         return None
-    key, prompt, type_part = parts
+    key, prompt, type_part = parts[:3]
     optional = type_part.startswith("?")
     ftype = type_part.lstrip("?").strip().lower()
     if not key or not prompt or ftype not in VALID_TYPES:
         return None
-    return Block(key=key, prompt=prompt, type=ftype, optional=optional, placeholder=raw)
+    if ftype == "bool":
+        if len(parts) != 5:
+            return None
+        yes_text, no_text = parts[3:]
+    elif len(parts) != 3:
+        return None
+    else:
+        yes_text = no_text = None
+    return Block(
+        key=key,
+        prompt=prompt,
+        type=ftype,
+        optional=optional,
+        placeholder=raw,
+        yes_text=yes_text,
+        no_text=no_text,
+    )
 
 
 def parse_body(body: str) -> Tuple[List[Block], List[str]]:
@@ -62,6 +80,8 @@ def validate_answer(
         if photo_id:
             return True, photo_id, None
         return False, None, "An image is expected. Send a photo or press \"Skip\"."
+    if block.type == "bool":
+        return False, None, "Please select Yes or No using the buttons."
 
     raw = (text_html or "").strip()
     if not raw:
@@ -131,6 +151,8 @@ def render_sample(body: str, answers: Dict[str, Any]) -> Tuple[str, Optional[str
                     photo_id = val
                 return ""
             any_answered = True
+            if block.type == "bool":
+                return BOLD_RE.sub(r"<b>\1</b>", str(val))
             return str(val)
 
         parts = []
