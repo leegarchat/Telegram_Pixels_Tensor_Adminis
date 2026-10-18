@@ -19,6 +19,7 @@ from bot.handlers import (
     admin_config,
     mod_actions,
     bans,
+    access_denied,
     user_submit,
 )
 
@@ -68,7 +69,8 @@ async def main():
         admin_config.router,   # superadmin-only /cfg_* commands
         mod_actions.router,    # approve/reject buttons and /approve, /cancel, /new, /change, /remove
         bans.router,           # /ban, /unban, /pban, /punban, /ban_list, /cooldown
-        user_submit.router     # private-chat submission wizard (/start flow)
+        user_submit.router,    # private-chat submission wizard (/start flow)
+        access_denied.router,  # LAST: 'no access' fallback when no handler matched
     )
 
     try:
