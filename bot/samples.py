@@ -126,11 +126,11 @@ def render_sample(body: str, answers: Dict[str, Any]) -> Tuple[str, Optional[str
             val = answers.get(block.key)
             if not val:
                 return ""
-            any_answered = True
             if block.type == "photo":
                 if photo_id is None:
                     photo_id = val
                 return ""
+            any_answered = True
             return str(val)
 
         parts = []
