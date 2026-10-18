@@ -164,7 +164,7 @@ async def step_family(call: CallbackQuery, state: FSMContext):
     await state.update_data(family=fam_key)
     await state.set_state(SubmitPost.sample)
     await call.message.edit_text(
-        f"Select post type for <b>{family.get('name', fam_key)}</b>:",
+        f"Select post type for <b>{html.escape(str(family.get('name', fam_key)))}</b>:",
         parse_mode="HTML",
         reply_markup=get_samples_kb(fam_key)
     )
@@ -214,7 +214,7 @@ async def ask_field(target: Message, state: FSMContext):
         kb = get_skip_kb() if block["optional"] else None
     # Numbered header helps users track progress through long templates.
     header = f"<b>{idx + 1}/{len(blocks)}</b>\n"
-    await target.answer(header + block["prompt"], parse_mode="HTML", reply_markup=kb)
+    await target.answer(header + html.escape(block["prompt"]), parse_mode="HTML", reply_markup=kb)
 
 
 async def store_and_advance(message: Message, state: FSMContext, value):
@@ -236,7 +236,7 @@ async def step_field_photo(message: Message, state: FSMContext):
     if block["type"] != "photo":
         # User sent a photo while a text/url field was expected — keep the wizard in place.
         return await message.answer(
-            f"⚠️ The current field is <b>{block['key']}</b> (type: {block['type']}), not a photo.",
+            f"⚠️ The current field is <b>{html.escape(block['key'])}</b> (type: {block['type']}), not a photo.",
             parse_mode="HTML"
         )
     _, value, _ = validate_answer(Block(**block), photo_id=message.photo[-1].file_id)

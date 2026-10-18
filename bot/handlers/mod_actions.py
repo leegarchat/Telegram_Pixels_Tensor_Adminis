@@ -350,7 +350,7 @@ async def cmd_approve_reply(message: Message, command: CommandObject, bot: Bot):
         "✅ Published to channel (with edits)." if command.args else "✅ Published to channel."
     )
     save_topic_post_link(receipt, published, fam_cfg["channel_id"], author_user_id=post["user_id"], author_username=post.get("username"))
-    await bot.send_message(post["user_id"], "🎉 Your submission has been approved and published!")
+    await notify_author(bot, post["user_id"], "🎉 Your submission has been approved and published!")
 
 
 # 3. /cancel command [reason]
