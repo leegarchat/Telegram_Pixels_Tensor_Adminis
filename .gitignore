@@ -1,2 +1,11 @@
 config.json
 **__pycache__**
+PROBLEMS.md
+tgadmin.sqlite3
+tgadmin.sqlite3-shm
+tgadmin.sqlite3-wal
+proxy.json
+proxy.txt
+/proxy/
+/collect_code.py
+/project_code_dump.txt

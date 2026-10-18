@@ -1,28 +1,47 @@
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.config_manager import config
+
+REQUEST_PUBLICATION_BUTTON = "📝 Request a publication"
+
+
+def get_user_menu_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=REQUEST_PUBLICATION_BUTTON)]],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
 
 
 def get_families_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for key, val in config.data.get("families", {}).items():
-        builder.button(text=val["name"], callback_data=f"fam:{key}")
+        if (
+            val.get("topic_id") is not None
+            and val.get("channel_id") is not None
+            and config.list_samples(key)
+        ):
+            builder.button(text=val["name"], callback_data=f"fam:{key}")
     builder.adjust(2)
     return builder.as_markup()
 
 
-def get_post_types_kb() -> InlineKeyboardMarkup:
-    types = ["ROM", "Kernel", "Recovery", "News / Other"]
+def get_samples_kb(family_key: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    for t in types:
-        builder.button(text=t, callback_data=f"type:{t}")
+    for key, val in config.list_samples(family_key).items():
+        builder.button(text=val.get("name", key), callback_data=f"sample:{key}")
     builder.adjust(2)
     return builder.as_markup()
 
 
-def get_skip_banner_kb() -> InlineKeyboardMarkup:
+def get_skip_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Skip Banner ➡️", callback_data="banner:skip")]
+        [InlineKeyboardButton(text="Skip ➡️", callback_data="field:skip")]
     ])
 
 
@@ -32,6 +51,12 @@ def get_user_confirm_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="✅ Send to Moderation", callback_data="submit:send"),
             InlineKeyboardButton(text="🔄 Restart", callback_data="submit:restart")
         ]
+    ])
+
+
+def get_restart_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="↩️ Start over", callback_data="submit:restart")]
     ])
 
 

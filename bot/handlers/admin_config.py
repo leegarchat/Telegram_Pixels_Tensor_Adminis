@@ -4,8 +4,10 @@ from aiogram.types import Message
 from aiogram.filters import Command, CommandObject, Filter
 
 from bot.config_manager import config
+from bot.filters import InModGroup
 
 router = Router()
+router.message.filter(InModGroup())
 
 
 class IsSuperAdmin(Filter):
@@ -32,7 +34,7 @@ async def cmd_set_modgroup(message: Message, command: CommandObject):
 
 @router.message(IsSuperAdmin(), Command("cfg_set_family"))
 async def cmd_set_family(message: Message, command: CommandObject):
-    """Формат: /cfg_set_family p8 topic_id channel_id Имя Линейки"""
+    """Format: /cfg_set_family p8 topic_id channel_id Family Name"""
     if not command.args:
         return await message.answer(
             "Usage: <code>/cfg_set_family [key] [topic_id] [channel_id] [Name]</code>\n"

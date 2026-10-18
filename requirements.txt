@@ -1,1 +1,2 @@
 aiogram>=3.13.0
+aiohttp-socks>=0.9.0
