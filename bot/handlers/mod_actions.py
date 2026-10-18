@@ -41,7 +41,7 @@ async def publish_to_channel(bot: Bot, channel_id: int, text: str, photo_id: str
     return await bot.send_message(chat_id=channel_id, text=text, parse_mode="HTML", disable_web_page_preview=True)
 
 
-def save_topic_post_link(source: Message, published: Message, channel_id: int) -> None:
+def save_topic_post_link(source: Message, published: Message, channel_id: int, author_user_id: int | None = None, author_username: str | None = None) -> None:
     """Record a topic-message -> channel-message link using Message objects."""
     save_topic_post_link_ids(
         source.chat.id,
@@ -49,6 +49,8 @@ def save_topic_post_link(source: Message, published: Message, channel_id: int) -
         source.message_thread_id,
         published,
         channel_id,
+        author_user_id=author_user_id,
+        author_username=author_username,
     )
 
 
@@ -58,11 +60,15 @@ def save_topic_post_link_ids(
     source_thread_id: int | None,
     published: Message,
     channel_id: int,
+    author_user_id: int | None = None,
+    author_username: str | None = None,
 ) -> None:
     """Record a topic-message -> channel-message link using raw ids.
 
     The media_type flag (photo vs text) tells later edits whether to call
-    edit_message_caption or edit_message_text on the channel post.
+    edit_message_caption or edit_message_text on the channel post. The optional
+    author fields remember who submitted the post so /ban works on replies to
+    already-published topic messages as well.
     """
     post_links.add_link(
         source_chat_id=source_chat_id,
@@ -71,6 +77,8 @@ def save_topic_post_link_ids(
         channel_id=channel_id,
         channel_message_id=published.message_id,
         media_type="photo" if published.photo else "text",
+        author_user_id=author_user_id,
+        author_username=author_username,
     )
 
 
@@ -271,7 +279,7 @@ async def mod_inline_callback(call: CallbackQuery, bot: Bot):
         published = await publish_to_channel(
             bot, fam_cfg["channel_id"], post["text"], post["photo_id"]
         )
-        save_topic_post_link(call.message, published, fam_cfg["channel_id"])
+        save_topic_post_link(call.message, published, fam_cfg["channel_id"], author_user_id=post["user_id"], author_username=post.get("username"))
         post_links.delete_pending_submission(
             call.message.chat.id, post["content_message_id"]
         )
@@ -280,7 +288,7 @@ async def mod_inline_callback(call: CallbackQuery, bot: Bot):
             f"✅ Approved & published by {call.from_user.mention_html()}",
             parse_mode="HTML",
         )
-        save_topic_post_link(receipt, published, fam_cfg["channel_id"])
+        save_topic_post_link(receipt, published, fam_cfg["channel_id"], author_user_id=post["user_id"], author_username=post.get("username"))
         await bot.send_message(post["user_id"], "🎉 Your submission has been approved and published!")
     else:
         # Reject: drop the queue entry, strip buttons, and notify both sides.
@@ -314,20 +322,22 @@ async def cmd_approve_reply(message: Message, command: CommandObject, bot: Bot):
 
     published = await publish_to_channel(bot, fam_cfg["channel_id"], new_text, new_photo)
     # Link both the replied submission and the canonical content row to the channel post.
-    save_topic_post_link(message.reply_to_message, published, fam_cfg["channel_id"])
+    save_topic_post_link(message.reply_to_message, published, fam_cfg["channel_id"], author_user_id=post["user_id"], author_username=post.get("username"))
     save_topic_post_link_ids(
         message.chat.id,
         post["content_message_id"],
         message.reply_to_message.message_thread_id,
         published,
         fam_cfg["channel_id"],
+        author_user_id=post["user_id"],
+        author_username=post.get("username"),
     )
     await remove_pending_buttons(bot, message.chat.id, post["content_message_id"])
     post_links.delete_pending_submission(message.chat.id, post["content_message_id"])
     receipt = await message.reply(
         "✅ Published to channel (with edits)." if command.args else "✅ Published to channel."
     )
-    save_topic_post_link(receipt, published, fam_cfg["channel_id"])
+    save_topic_post_link(receipt, published, fam_cfg["channel_id"], author_user_id=post["user_id"], author_username=post.get("username"))
     await bot.send_message(post["user_id"], "🎉 Your submission has been approved and published!")
 
 

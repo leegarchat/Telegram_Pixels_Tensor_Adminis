@@ -26,50 +26,82 @@ router.message.filter(InModGroup())
 
 
 def build_help_text() -> str:
-    """Compose the group /help overview, including the live template count."""
+    """Compose the short /help index with pointers to per-section subhelps."""
     sample_count = sum(
         len(family.get("samples", {}))
         for family in config.data.get("families", {}).values()
     )
     return (
-        "📖 <b>Bot commands (available only in this group)</b>\n\n"
-        "Users start a submission in the bot DM with <code>/start</code> or the "
-        "<b>Request a publication</b> keyboard button.\n\n"
-        "<b>Topic → channel links</b>\n"
-        "• <code>/link &lt;url|@username&gt; [tag]</code> — bind this topic to a channel; tag becomes its label\n"
-        "  If omitted, the topic name is used. Quote multi-word tags if needed.\n"
-        "  (the bot must be an admin of that channel with posting rights)\n"
-        "• <code>/unlink</code> — remove the binding of the current topic\n"
-        "• <code>/get_links</code> — list all topic/channel bindings\n\n"
-        "<b>Direct channel management</b>\n"
-        "• <code>/new [text]</code> — publish to the topic's channel (photo goes as a caption)\n"
-        "• Reply to a published topic message with <code>/change New text</code> or <code>/remove</code>\n"
-        "• You can also use the topic message URL: <code>/change [topic_url] New text</code> or <code>/remove [topic_url]</code>\n"
-        "• Direct channel IDs remain supported: <code>/change [channel_msg_id] [text]</code>, <code>/remove [channel_msg_id]</code>\n\n"
-        "<b>Moderation of submissions</b>\n"
-        "• <code>/approve [text]</code> — as a reply to a submission: publish (optionally edited)\n"
-        "• <code>/cancel [reason]</code> — as a reply to a submission: reject\n"
-        "• ✅ / ❌ buttons under the submission message\n\n"
-        "<b>Configuration (superadmins only)</b>\n"
-        "• <code>/cfg_show</code> · <code>/cfg_set_modgroup</code> · <code>/cfg_set_family</code>\n"
-        "• <code>/cfg_add_admin</code> · <code>/cfg_del_admin</code>\n\n"
-        "<b>Post templates (only in this group, inside a linked topic)</b>\n"
-        "• <code>/new_sample Name [--footer on|off]</code> — create/update a topic template\n"
-        "  The body can be fixed text or contain placeholders:\n"
-        "  <code>{Key | Prompt | type}</code>, types: text, url, urls, photo;\n"
-        "  <code>?</code> before the type marks an optional field (<code>?text</code>, <code>?photo</code>)\n"
-        "  The submit-link footer is on by default; use <code>--footer off</code> to disable it.\n"
-        "• <code>/new_sample_help</code> — full template formatting guide\n"
-        "• <code>/sample_list</code> — list templates for this topic's channel\n"
-        "• <code>/sample &lt;name&gt;</code> — show this topic's template config + preview\n"
-        "• <code>/del_sample &lt;name&gt;</code> — delete a template from this topic\n"
-        f"• Total topic-scoped templates: <b>{sample_count}</b>\n\n"
-        "<b>Import/export (run in a topic; import by replying to the exported file)</b>\n"
-        "• <code>/export_sample</code> · <code>/import_sample</code> — current topic templates\n"
-        "• <code>/export_sample_all</code> · <code>/import_sample_all</code> — templates for all topics\n"
-        "• <code>/export_config</code> · <code>/import_config</code> — full config without bot token\n"
-        "• <code>/export_all</code> · <code>/import_all</code> — ZIP backup with config (no token) and SQLite DB"
+        "📖 <b>Bot help</b> (moderators, this group only)\n"
+        "Users start a submission in DM with <code>/start</code>.\n\n"
+        "• <code>/help links</code> — topic → channel bindings\n"
+        "• <code>/help mod</code> — approve / edit / delete posts\n"
+        "• <code>/help bans</code> — /ban, /pban, /ban_list\n"
+        "• <code>/help cooldown</code> — per-topic submission pauses\n"
+        "• <code>/help samples</code> — post templates\n"
+        "• <code>/help backup</code> — export / import\n"
+        "• <code>/help config</code> — superadmin settings\n"
+        f"• <code>/help all</code> — full reference at once\n\n"
+        f"Topic templates configured: <b>{sample_count}</b>"
     )
+
+
+def build_help_section(section: str) -> str | None:
+    """Return one help section by key, or None for unknown keys."""
+    sections = {
+        "links": (
+            "<b>🔗 Topic → channel links</b>\n"
+            "• <code>/link &lt;url|@username&gt; [tag]</code> — bind this topic to a channel\n"
+            "• <code>/unlink</code> — remove the binding of the current topic\n"
+            "• <code>/get_links</code> — list all topic/channel bindings"
+        ),
+        "mod": (
+            "<b>🛠 Moderation</b> (reply to a submission or topic message)\n"
+            "• <code>/approve [text]</code> — publish (optionally edited)\n"
+            "• <code>/cancel [reason]</code> — reject without ban\n"
+            "• <code>/new [text]</code> — publish straight to the topic channel\n"
+            "• <code>/change ...</code> / <code>/remove ...</code> — edit/delete by reply, "
+            "topic URL, channel URL or message id\n"
+            "• ✅ / ❌ buttons under each submission"
+        ),
+        "bans": (
+            "<b>🚫 Bans</b> (reply to a submission, or pass a user id)\n"
+            "• <code>/ban [20m|1h] [reason]</code> — reject + ban in this topic\n"
+            "• <code>/unban [id]</code> — lift the topic ban\n"
+            "• <code>/pban [20m|1h] [reason]</code> — reject + ban bot-wide\n"
+            "• <code>/punban [id]</code> — lift the global ban\n"
+            "• <code>/ban_list</code> — this topic + global bans; <code>/ban_list all</code> — everything\n"
+            "No duration = permanent. Author id/tag is stored with each post."
+        ),
+        "cooldown": (
+            "<b>⏳ Cooldowns</b> (per-topic submission pauses)\n"
+            "• <code>/cooldown</code> — show this topic's pause (or global default in General)\n"
+            "• <code>/cooldown 10m</code> — set pause for this topic (or global default in General)\n"
+            "• <code>/cooldown off</code> — disable the pause\n"
+            "• <code>/cooldowns</code> — list global default + all topic overrides"
+        ),
+        "samples": (
+            "<b>📝 Post templates</b> (inside a linked topic)\n"
+            "• <code>/new_sample Name [--footer on|off]</code> — create/update a template\n"
+            "• <code>/new_sample_help</code> — full placeholder guide\n"
+            "• <code>/sample_list</code> — list templates\n"
+            "• <code>/sample &lt;name&gt;</code> — config + preview\n"
+            "• <code>/del_sample &lt;name&gt;</code> — delete a template"
+        ),
+        "backup": (
+            "<b>💾 Import/export</b> (run in a topic; import by replying to the file)\n"
+            "• <code>/export_sample</code> · <code>/import_sample</code> — current topic\n"
+            "• <code>/export_sample_all</code> · <code>/import_sample_all</code> — all topics\n"
+            "• <code>/export_config</code> · <code>/import_config</code> (superadmin) — config, no token\n"
+            "• <code>/export_all</code> · <code>/import_all</code> (superadmin) — ZIP with config + DB"
+        ),
+        "config": (
+            "<b>⚙️ Configuration</b> (superadmins only)\n"
+            "• <code>/cfg_show</code> · <code>/cfg_set_modgroup</code> · <code>/cfg_set_family</code>\n"
+            "• <code>/cfg_add_admin</code> · <code>/cfg_del_admin</code>"
+        ),
+    }
+    return sections.get(section)
 
 
 def normalize_chat_ref(raw: str) -> str:
@@ -157,9 +189,28 @@ async def track_topic_edited(message: Message):
 
 
 @router.message(Command("help"))
-async def cmd_help(message: Message):
-    """Send the group command reference (works in any mod-group thread)."""
-    await message.answer(build_help_text(), parse_mode="HTML")
+async def cmd_help(message: Message, command: CommandObject):
+    """Send the help index or one section: /help [links|mod|bans|cooldown|samples|backup|config|all]."""
+    arg = (command.args or "").strip().lower()
+    if not arg:
+        await message.answer(build_help_text(), parse_mode="HTML")
+        return
+    if arg == "all":
+        # Full reference sent as several short messages to stay readable on mobile.
+        await message.answer(build_help_text(), parse_mode="HTML")
+        for section in ("links", "mod", "bans", "cooldown", "samples", "backup", "config"):
+            text = build_help_section(section)
+            if text:
+                await message.answer(text, parse_mode="HTML")
+        return
+    text = build_help_section(arg)
+    if text is None:
+        await message.answer(
+            "⚠️ Unknown section. Use: <code>/help links|mod|bans|cooldown|samples|backup|config|all</code>",
+            parse_mode="HTML",
+        )
+        return
+    await message.answer(text, parse_mode="HTML")
 
 
 @router.message(Command("link"))

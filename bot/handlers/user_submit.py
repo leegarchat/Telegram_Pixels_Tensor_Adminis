@@ -48,8 +48,25 @@ from bot.keyboards.inline import (
 router = Router()
 router.message.filter(F.chat.type == "private")
 router.callback_query.filter(F.message.chat.type == "private")
-# In-memory per-user timestamp of the last successful submission (resets on restart).
+# In-memory per-(user, family) timestamp of the last successful submission (resets on restart).
+# Key: (user_id, family_key). Global legacy keys are no longer used; each topic has its own
+# cooldown via families.<key>.cooldown_seconds with fallback to config cooldown_seconds.
 user_cooldowns = {}
+
+
+def get_effective_cooldown(family_key: str) -> int:
+    """Return the effective submission cooldown for a family (topic override or global default)."""
+    family = config.get_family(family_key)
+    if isinstance(family.get("cooldown_seconds"), (int, float)):
+        return max(0, int(family["cooldown_seconds"]))
+    return max(0, int(config.data.get("cooldown_seconds", 600)))
+
+
+def author_display_tag(user) -> str:
+    """Return the plain author tag stored in SQLite (@username or full name)."""
+    if getattr(user, "username", None):
+        return f"@{user.username}"
+    return getattr(user, "full_name", str(getattr(user, "id", "")))
 
 
 def format_post(data: dict) -> str:
@@ -90,16 +107,13 @@ async def cmd_request_publication(message: Message, state: FSMContext):
 
 
 async def begin_submission(message: Message, state: FSMContext):
-    """Rate-limit check, then show the family picker (or an explanatory notice)."""
-    now = time.time()
-    cd = config.data.get("cooldown_seconds", 600)
-    last_time = user_cooldowns.get(message.from_user.id, 0)
-
-    # Superadmins bypass the cooldown; everyone else must wait `cd` seconds.
-    if not config.is_admin(message.from_user.id) and (now - last_time) < cd:
-        rem = int(cd - (now - last_time))
+    """Global-ban check, then show the family picker (or an explanatory notice)."""
+    # A global (/pban) ban blocks every topic; per-topic bans/cooldowns are checked later
+    # once the user picks a family, so one hot topic does not lock the others.
+    active_ban = post_links.is_banned(message.from_user.id)
+    if active_ban:
         return await message.answer(
-            f"⏳ Rate limit active. Please wait {rem}s before submitting again.",
+            "🚫 You are banned from submitting posts. Please contact moderation.",
             reply_markup=get_user_menu_kb(),
         )
 
@@ -137,6 +151,10 @@ async def step_family(call: CallbackQuery, state: FSMContext):
     # The family may have been unlinked or deleted after the keyboard was shown.
     if not family.get("channel_id") or family.get("topic_id") is None:
         return await call.answer("⚠️ This family is not linked to a channel.", show_alert=True)
+
+    # Per-topic (/ban) or global (/pban) ban blocks entering this family's flow.
+    if not config.is_admin(call.from_user.id) and post_links.is_banned(call.from_user.id, fam_key):
+        return await call.answer("🚫 You are banned in this topic.", show_alert=True)
 
     samples = config.list_samples(fam_key)
     if not samples:
@@ -356,6 +374,22 @@ async def confirm_send(call: CallbackQuery, state: FSMContext, bot: Bot):
     fam_cfg = config.get_family(data["family"])
     mod_group_id = config.data.get("mod_group_id")
 
+    # Re-check bans and the per-topic cooldown at send time (state may be stale).
+    if not config.is_admin(call.from_user.id):
+        active_ban = post_links.is_banned(call.from_user.id, data["family"])
+        if active_ban:
+            await state.clear()
+            return await call.message.answer("🚫 You are banned in this topic.")
+        cd = get_effective_cooldown(data["family"])
+        last_time = user_cooldowns.get((call.from_user.id, data["family"]), 0)
+        now = time.time()
+        if cd > 0 and (now - last_time) < cd:
+            rem = int(cd - (now - last_time))
+            return await call.answer(
+                f"⏳ Cooldown active for this topic. Please wait {rem}s.",
+                show_alert=True,
+            )
+
     # Header identifies the author and target so moderators have full context.
     user_tag = format_user_tag(call.from_user)
     family_name = html.escape(str(fam_cfg.get("name", data["family"])))
@@ -403,9 +437,10 @@ async def confirm_send(call: CallbackQuery, state: FSMContext, bot: Bot):
         family_key=data["family"],
         text=data["final_text"],
         photo_id=data.get("photo_id"),
+        username=author_display_tag(call.from_user),
     )
-    # Start the cooldown window for this user (in-memory; resets on bot restart).
-    user_cooldowns[call.from_user.id] = time.time()
+    # Start the per-topic cooldown window (in-memory; resets on bot restart).
+    user_cooldowns[(call.from_user.id, data["family"])] = time.time()
 
     await state.clear()
     await call.message.edit_reply_markup(reply_markup=None)

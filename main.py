@@ -18,6 +18,7 @@ from bot.handlers import (
     transfer,
     admin_config,
     mod_actions,
+    bans,
     user_submit,
 )
 
@@ -66,6 +67,7 @@ async def main():
         topic_links.router,    # /link, /unlink, /get_links, /help
         admin_config.router,   # superadmin-only /cfg_* commands
         mod_actions.router,    # approve/reject buttons and /approve, /cancel, /new, /change, /remove
+        bans.router,           # /ban, /unban, /pban, /punban, /ban_list, /cooldown
         user_submit.router     # private-chat submission wizard (/start flow)
     )
 
