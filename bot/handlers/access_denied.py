@@ -21,10 +21,10 @@ from bot.config_manager import config
 # This router has no global filter on purpose: it must see updates from any chat.
 router = Router()
 
-# Shown when a non-superadmin touches an admin-only command (Russian, as requested).
-DENIED_SUPERADMIN_TEXT = "⛔ У вас нет доступа к этой команде. Она доступна только суперадминам."
+# Shown when a non-superadmin touches an admin-only command.
+DENIED_SUPERADMIN_TEXT = "⛔ You don't have access to this command. It is available to superadmins only."
 # Shown when a mod-group command is used outside the closed group.
-DENIED_MODGROUP_TEXT = "⛔ Эта команда доступна только в закрытой группе модерации."
+DENIED_MODGROUP_TEXT = "⛔ This command is available only in the private moderation group."
 
 
 @router.message(Command(
