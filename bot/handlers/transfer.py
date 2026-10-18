@@ -119,6 +119,10 @@ def validate_samples_payload(samples: Any) -> dict[str, dict[str, str]]:
     for key, sample in samples.items():
         if not isinstance(key, str) or not isinstance(sample, dict):
             raise ValueError("Each sample must be an object with a string key.")
+        if not key or len(f"sample:{key}".encode("utf-8")) > 64:
+            raise ValueError(
+                f"Sample '{key}' has an empty key or exceeds Telegram's 64-byte button callback limit."
+            )
         name = sample.get("name")
         body = sample.get("body")
         if not isinstance(name, str) or not isinstance(body, str):

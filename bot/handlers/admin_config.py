@@ -4,7 +4,8 @@ All commands require the sender to be listed in `config.json -> admins`
 (IsSuperAdmin). cfg_set_modgroup works in any chat; the rest additionally
 require the moderation group context (InModGroup).
 """
-# json: pretty-printing config for /cfg_show.
+# json: pretty-printing config for /cfg_show; html: escaping config dump and names.
+import html
 import json
 # Router: handler registration; Message: updates; Command/CommandObject: slash parsing.
 from aiogram import Router
@@ -23,7 +24,7 @@ async def cmd_cfg_show(message: Message):
     """Dump the current config.json with the bot token masked, wrapped in HTML <pre>."""
     safe_copy = dict(config.data)
     safe_copy["bot_token"] = "***HIDDEN***"
-    formatted = json.dumps(safe_copy, indent=2, ensure_ascii=False)
+    formatted = html.escape(json.dumps(safe_copy, indent=2, ensure_ascii=False))
     await message.answer(f"<b>Current config.json:</b>\n<pre>{formatted}</pre>", parse_mode="HTML")
 
 
@@ -57,9 +58,11 @@ async def cmd_set_family(message: Message, command: CommandObject):
     if len(parts) < 4:
         return await message.answer("⚠️ Not enough arguments.")
 
+    if not parts[1].isdigit() or not parts[2].lstrip("-").isdigit():
+        return await message.answer("⚠️ <code>topic_id</code> and <code>channel_id</code> must be integers.", parse_mode="HTML")
     key, topic_id, channel_id, name = parts[0].lower(), int(parts[1]), int(parts[2]), parts[3]
     config.set_family_data(key, name, topic_id, channel_id)
-    await message.answer(f"✅ Family <b>{name}</b> (<code>{key}</code>) saved to config.json.", parse_mode="HTML")
+    await message.answer(f"✅ Family <b>{html.escape(name)}</b> (<code>{html.escape(key)}</code>) saved to config.json.", parse_mode="HTML")
 
 
 @router.message(InModGroup(), IsSuperAdmin(), Command("cfg_add_admin"))
@@ -68,7 +71,7 @@ async def cmd_add_admin(message: Message, command: CommandObject):
     if not command.args or not command.args.isdigit():
         return await message.answer("Usage: <code>/cfg_add_admin [user_id]</code>", parse_mode="HTML")
     new_id = int(command.args)
-    if new_id not in config.data["admins"]:
+    if new_id not in config.data.setdefault("admins", []):
         config.data["admins"].append(new_id)
         config.save()
     await message.answer(f"✅ User <code>{new_id}</code> added to admins.", parse_mode="HTML")
@@ -83,7 +86,7 @@ async def cmd_del_admin(message: Message, command: CommandObject):
     if not command.args or not command.args.isdigit():
         return await message.answer("Usage: <code>/cfg_del_admin [user_id]</code>", parse_mode="HTML")
     rem_id = int(command.args)
-    if rem_id in config.data["admins"]:
+    if rem_id in config.data.setdefault("admins", []):
         config.data["admins"].remove(rem_id)
         config.save()
     await message.answer(f"🗑 User <code>{rem_id}</code> removed from admins.", parse_mode="HTML")

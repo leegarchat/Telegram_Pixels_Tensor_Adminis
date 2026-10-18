@@ -319,7 +319,7 @@ async def cmd_unlink(message: Message):
 
     key, fam, removed = result
     channel_info = (
-        f"<b>{removed['channel_title']}</b> (<code>{removed['channel_id']}</code>)"
+        f"<b>{escape(str(removed['channel_title']))}</b> (<code>{removed['channel_id']}</code>)"
         if removed["channel_id"] else "—"
     )
     await message.reply(
@@ -343,14 +343,14 @@ async def cmd_get_links(message: Message):
     mod_group_id = config.data.get("mod_group_id", 0)
     lines = ["📡 <b>All topic → channel links</b>\n"]
     for i, link in enumerate(links, 1):
-        name = link.get("channel_title") or link.get("name") or link["key"]
+        name = escape(str(link.get("channel_title") or link.get("name") or link["key"]))
         t_url = topic_url(mod_group_id, link["topic_id"])
-        channel = link.get("channel_title") or "—"
+        channel = escape(str(link.get("channel_title") or "—"))
         channel_id = link.get("channel_id")
         channel_url = link.get("channel_url")
         channel_part = f"<b>{channel}</b>"
         if channel_url and channel_url.startswith("https://"):
-            channel_part = f"<a href='{channel_url}'>{channel}</a>"
+            channel_part = f"<a href='{escape(str(channel_url))}'>{channel}</a>"
         lines.append(
             f"{i}. <b>{name}</b> (<code>{link['key']}</code>)\n"
             f"   Topic: <a href='{t_url}'>#{link['topic_id']}</a>\n"

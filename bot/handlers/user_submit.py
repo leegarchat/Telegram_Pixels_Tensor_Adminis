@@ -374,6 +374,13 @@ async def confirm_send(call: CallbackQuery, state: FSMContext, bot: Bot):
     fam_cfg = config.get_family(data["family"])
     mod_group_id = config.data.get("mod_group_id")
 
+    # The topic may have been unlinked while the user was filling the form.
+    if not fam_cfg.get("channel_id") or fam_cfg.get("topic_id") is None:
+        await state.clear()
+        return await call.message.answer(
+            "⚠️ This topic is no longer linked to a channel. Please start over: /start"
+        )
+
     # Re-check bans and the per-topic cooldown at send time (state may be stale).
     if not config.is_admin(call.from_user.id):
         active_ban = post_links.is_banned(call.from_user.id, data["family"])

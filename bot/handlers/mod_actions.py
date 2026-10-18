@@ -41,6 +41,14 @@ async def publish_to_channel(bot: Bot, channel_id: int, text: str, photo_id: str
     return await bot.send_message(chat_id=channel_id, text=text, parse_mode="HTML", disable_web_page_preview=True)
 
 
+async def notify_author(bot: Bot, user_id: int, text: str, parse_mode: str | None = None) -> None:
+    """Best-effort DM to the submission author (ignores blocked-bot / deleted-user errors)."""
+    try:
+        await bot.send_message(user_id, text, parse_mode=parse_mode)
+    except Exception:
+        pass
+
+
 def save_topic_post_link(source: Message, published: Message, channel_id: int, author_user_id: int | None = None, author_username: str | None = None) -> None:
     """Record a topic-message -> channel-message link using Message objects."""
     save_topic_post_link_ids(
@@ -275,6 +283,8 @@ async def mod_inline_callback(call: CallbackQuery, bot: Bot):
 
     fam_cfg = config.get_family(post["family_key"])
     if call.data == "mod:approve":
+        if not fam_cfg.get("channel_id"):
+            return await call.answer("⚠️ This topic is no longer linked to a channel.", show_alert=True)
         # Publish to the bound channel, link both the button message and the receipt.
         published = await publish_to_channel(
             bot, fam_cfg["channel_id"], post["text"], post["photo_id"]
@@ -289,7 +299,7 @@ async def mod_inline_callback(call: CallbackQuery, bot: Bot):
             parse_mode="HTML",
         )
         save_topic_post_link(receipt, published, fam_cfg["channel_id"], author_user_id=post["user_id"], author_username=post.get("username"))
-        await bot.send_message(post["user_id"], "🎉 Your submission has been approved and published!")
+        await notify_author(bot, post["user_id"], "🎉 Your submission has been approved and published!")
     else:
         # Reject: drop the queue entry, strip buttons, and notify both sides.
         post_links.delete_pending_submission(
@@ -297,7 +307,7 @@ async def mod_inline_callback(call: CallbackQuery, bot: Bot):
         )
         await call.message.edit_reply_markup(reply_markup=None)
         await call.message.reply(f"❌ Rejected by {call.from_user.mention_html()}", parse_mode="HTML")
-        await bot.send_message(post["user_id"], "❌ Your submission was rejected by moderation without explanation.")
+        await notify_author(bot, post["user_id"], "❌ Your submission was rejected by moderation without explanation.")
 
 
 # 2. /approve command (plain or with a custom edited text/banner)
@@ -315,6 +325,8 @@ async def cmd_approve_reply(message: Message, command: CommandObject, bot: Bot):
         return await message.reply("⚠️ Target submission not found or already processed.")
 
     fam_cfg = config.get_family(post["family_key"])
+    if not fam_cfg.get("channel_id"):
+        return await message.reply("⚠️ This topic is no longer linked to a channel.")
     # With args: publish the moderator-edited text (entities preserved as HTML);
     # without: reuse the queued text. Same rule for the attached photo banner.
     new_text = formatted_command_args(message) if command.args else post["text"]
@@ -363,7 +375,7 @@ async def cmd_cancel_reply(message: Message, command: CommandObject, bot: Bot):
     await remove_pending_buttons(bot, message.chat.id, post["content_message_id"])
     post_links.delete_pending_submission(message.chat.id, post["content_message_id"])
     await message.reply(f"🚫 Submission rejected. User notified.")
-    await bot.send_message(post["user_id"], user_notice, parse_mode="HTML")
+    await notify_author(bot, post["user_id"], user_notice, parse_mode="HTML")
 
 
 # 4. Direct channel management commands (/new, /change, /remove)

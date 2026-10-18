@@ -189,6 +189,17 @@ async def cmd_new_sample(message: Message):
             parse_mode="HTML"
         )
 
+    sample_key = config.normalize_sample_key(name)
+    if not sample_key:
+        return await message.reply(
+            f"{NEW_SAMPLE_HELP}\n\n⚠️ A valid template name (with letters/digits) and body are required.",
+            parse_mode="HTML"
+        )
+    if len(f"sample:{sample_key}".encode("utf-8")) > 64:
+        return await message.reply(
+            "⚠️ Template name is too long (exceeds Telegram's 64-byte button callback limit)."
+        )
+
     # Reject invalid or duplicate placeholders before persisting anything.
     blocks, errors = parse_body(body)
     if errors:
@@ -205,7 +216,6 @@ async def cmd_new_sample(message: Message):
     # Pre-check: fixed text plus footer must already fit within Telegram limits,
     # otherwise even empty user answers could not be published.
     fixed_text = fixed_template_text(body)
-    sample_key = config.normalize_sample_key(name)
     existing_sample = config.get_sample(family_key, sample_key)
     footer_enabled = (
         footer_setting
@@ -237,13 +247,13 @@ async def cmd_new_sample(message: Message):
     )
     # Summarize the stored fields so the author can verify required/optional counts.
     fields = "\n".join(
-        f"{i}. <b>{b.key}</b> — {b.type}{' (optional)' if b.optional else ''}"
+        f"{i}. <b>{html.escape(b.key)}</b> — {b.type}{' (optional)' if b.optional else ''}"
         for i, b in enumerate(blocks, 1)
     )
     verb = "created ✅" if created else "updated ♻️"
     await message.reply(
-        f"Template <b>{name}</b> (<code>{key}</code>) {verb} for "
-        f"<b>{family.get('name', family_key)}</b>.\n"
+        f"Template <b>{html.escape(name)}</b> (<code>{html.escape(key)}</code>) {verb} for "
+        f"<b>{html.escape(str(family.get('name', family_key)))}</b>.\n"
         f"Fields: {len(blocks)}\n{fields or '(fixed-text template)'}\n"
         f"Submit-link footer: {'on' if footer_enabled else 'off'}\n\n"
         f"Preview it with <code>/sample {key}</code>",
@@ -263,13 +273,13 @@ async def cmd_sample_list(message: Message):
     samples = config.list_samples(family_key)
     if not samples:
         return await message.reply(
-            f"No templates are configured for <b>{family.get('name', family_key)}</b>. "
+            f"No templates are configured for <b>{html.escape(str(family.get('name', family_key)))}</b>. "
             "Create one in this topic with /new_sample (see /new_sample_help).",
             parse_mode="HTML"
         )
 
     lines = [
-        f"📚 <b>Templates for {family.get('name', family_key)}</b> (<code>{family_key}</code>)\n"
+        f"📚 <b>Templates for {html.escape(str(family.get('name', family_key)))}</b> (<code>{family_key}</code>)\n"
     ]
     for key, sample in samples.items():
         blocks, _ = parse_body(sample.get("body", ""))
@@ -280,7 +290,7 @@ async def cmd_sample_list(message: Message):
             if blocks else "fixed-text template"
         )
         lines.append(
-            f"• <b>{sample.get('name', key)}</b> (<code>{key}</code>) — "
+            f"• <b>{html.escape(str(sample.get('name', key)))}</b> (<code>{html.escape(key)}</code>) — "
             f"{fields_summary}; footer {'on' if sample.get('append_submit_link', True) else 'off'}"
         )
     lines.append("\nUse <code>/sample &lt;name&gt;</code> to inspect a template.")
